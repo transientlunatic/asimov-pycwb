@@ -194,7 +194,10 @@ jobs:
                 hrss: 4.0e-22
                 ra: 1.0
                 dec: 0.3
+                pol: 0.0
                 gps_time: 1000000008.0
+                t_start: -1.0
+                t_end: 1.0
               generator: "burst_waveform.interface.generate_waveform_pycwb.get_td_waveform"
               noise:
                 type: "GaussianNoise"
