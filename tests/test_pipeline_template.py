@@ -168,3 +168,16 @@ def test_build_dag_dryrun_prefers_preseeded_config(tmp_path, capsys):
     pipeline.build_dag(dryrun=True)
 
     assert preseeded.read_text() == "outputDir: output\n"
+
+
+def test_submit_dag_accepts_dryrun_kwarg(tmp_path):
+    # asimov's own CLI unconditionally calls pipeline.submit_dag(dryrun=...)
+    # (see e.g. asimov.cli.manage.submit) - a submit_dag(self) with no
+    # parameter raises TypeError there, which is exactly what this plugin's
+    # end-to-end test caught on a real asimov run.
+    production = FakeProduction(tmp_path, make_meta())
+    pipeline = PyCWB(production)
+    pipeline.dag_filename = str(tmp_path / "pycwb-test.dag")
+    open(pipeline.dag_filename, "w").close()
+
+    assert pipeline.submit_dag(dryrun=True) is None

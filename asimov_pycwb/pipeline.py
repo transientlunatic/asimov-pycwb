@@ -204,9 +204,14 @@ class PyCWB(Pipeline):
         self.dag_filename = condor.dag_file
         self.logger.info(f"Built pycWB condor DAG at {self.dag_filename}")
 
-    def submit_dag(self):
+    def submit_dag(self, dryrun=False):
         """
         Submit this production's pre-built DAG to the configured scheduler.
+
+        ``dryrun`` is accepted (rather than defaulting to no arguments) to
+        match asimov's own CLI, which unconditionally calls
+        ``pipeline.submit_dag(dryrun=dryrun)`` (see e.g.
+        ``asimov.cli.manage.submit``).
         """
         if not self.dag_filename or not os.path.exists(self.dag_filename):
             raise PipelineException(
@@ -214,6 +219,10 @@ class PyCWB(Pipeline):
                 "run build_dag() first.",
                 production=self.production,
             )
+
+        if dryrun:
+            self.logger.info(f"Dry run: would submit DAG at {self.dag_filename}")
+            return None
 
         cluster_id = self.scheduler.submit_dag(
             self.dag_filename,
