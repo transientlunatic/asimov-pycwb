@@ -186,20 +186,30 @@ class PyCWB(Pipeline):
         if os.path.exists(condor_dir):
             shutil.rmtree(condor_dir)
 
-        job_segments, config, working_dir = prepare_job_runs(
-            working_dir, config_file, overwrite=True
-        )
+        # prepare_job_runs() does os.chdir(working_dir) and never restores
+        # the original directory - confirmed directly by this plugin's own
+        # end-to-end test, where that leaked into asimov's own subsequent
+        # CLI processing (a FileNotFoundError writing its relative-path
+        # ".asimov/_cache_jobs.yaml" cache from what was now pycWB's rundir
+        # instead of the asimov project root). Restore it ourselves.
+        original_cwd = os.getcwd()
+        try:
+            job_segments, config, working_dir = prepare_job_runs(
+                working_dir, config_file, overwrite=True
+            )
 
-        scheduler_meta = self.production.meta.get("scheduler", {})
-        condor = HTCondor(
-            working_dir=working_dir,
-            conda_env=scheduler_meta.get("conda environment") or None,
-            accounting_group=scheduler_meta.get("accounting group"),
-            n_proc=scheduler_meta.get("n proc", 1),
-            memory=scheduler_meta.get("memory", "6GB"),
-            disk=scheduler_meta.get("disk", "8GB"),
-        )
-        condor.create(job_segments, submit=False)
+            scheduler_meta = self.production.meta.get("scheduler", {})
+            condor = HTCondor(
+                working_dir=working_dir,
+                conda_env=scheduler_meta.get("conda environment") or None,
+                accounting_group=scheduler_meta.get("accounting group"),
+                n_proc=scheduler_meta.get("n proc", 1),
+                memory=scheduler_meta.get("memory", "6GB"),
+                disk=scheduler_meta.get("disk", "8GB"),
+            )
+            condor.create(job_segments, submit=False)
+        finally:
+            os.chdir(original_cwd)
 
         # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
         # asimov's own scheduler.submit_dag() passes it straight to
