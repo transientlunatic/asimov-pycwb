@@ -117,18 +117,24 @@ plugin didn't otherwise need to know about, both worth flagging clearly:
 - **pycWB downloads a small (~54 MB), public, Git-LFS-hosted wavelet
   cross-talk catalog on first use** (`pycwb.modules.xtalk`, from
   `github.com/PycWB/xtalk-data`). This is unrelated to the ROOT/cwb-core
-  extension above and needs no credentials, but it does need a real
-  internet connection — this development environment's network access
-  didn't extend to that repository, so this exact download path (and the
-  full run that depends on it) could not be exercised directly while
-  writing this workflow. Everything up to that download — pycWB installing
-  and importing cleanly, the config schema, and job-segment/injection
-  construction — *was* verified directly by running pycWB's own source
-  against this exact config (substituting a placeholder file only for the
-  catalog's binary content, which is checked for internal consistency
-  against `l_low`/`l_high`/`levelR` but isn't otherwise needed to build a
-  DAG). Treat the first real CI run of this workflow as the actual
-  end-to-end validation, and expect it may need a round of fixes.
+  extension above and needs no credentials, and it downloads and validates
+  correctly in CI (confirmed by the workflow's own runs).
+
+This workflow is green: a real DAG is submitted to a real HTCondor pool,
+the batch analysis job and merge node both run for real over synthetic
+noise, and the resulting `catalog/catalog.parquet` is a real, readable
+cWB trigger table (confirmed with real column names — `rho`, `net_cc`,
+`hrss_H1`, `sky_error_regions`, etc. — not a stub). Getting there took a
+few rounds of CI-driven fixes (see the PR history): a broken `pip
+install`, missing pycWB injection-parameter fields, a `submit_dag()`
+signature mismatch, a `pathlib.Path` htcondor2 rejected, and pycWB's
+`prepare_job_runs()` leaving the process's working directory changed
+after it returns. One thing the test deliberately does *not* assert:
+whether the injected sine-Gaussian burst actually clears cWB's detection
+thresholds (a question of amplitude tuning, not of the plugin's
+correctness) — a real, non-empty merge is the completion criterion; a
+nonzero trigger count is a bonus signal the workflow logs but doesn't
+require.
 
 ## What's implemented
 
@@ -149,11 +155,10 @@ plugin didn't otherwise need to know about, both worth flagging clearly:
 
 ## Known limitations / TODOs
 
-This is a first-pass scaffold. Most of it was written by reading pycWB's
-and asimov's source rather than by testing against a real run; an
-end-to-end test now exercises a real pycWB run against real HTCondor (see
-above), but it hasn't actually been run in CI yet as of this plugin's
-current state, so treat the following as unverified until it has:
+This is a first-pass scaffold. `build_dag`/`submit_dag`/`detect_completion`
+are now verified against a real pycWB run on a real HTCondor pool (see
+"End-to-end test" above); the rest of this list is still unverified against
+a real run:
 
 - **Only run/segment/IFO/data fields are templated.** cWB's analysis
   thresholds and regulators are fixed defaults; there's no blueprint-level
