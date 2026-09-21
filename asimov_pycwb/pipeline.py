@@ -1,0 +1,246 @@
+"""
+Asimov pipeline plugin wrapping pycWB's targeted (single-candidate) mode.
+
+pycWB (https://github.com/PycWB/pycwb) is primarily a continuous, all-sky
+*search* pipeline: it scans a long stretch of data for triggers, which has no
+natural mapping onto asimov's per-Production model (one analysis of one
+known event). This plugin does **not** attempt to run that mode.
+
+Instead it targets pycWB's single-candidate reconstruction mode, in which a
+short segment of data centred on a known trigger time (``gps_center`` +/-
+``time_left``/``time_right``) is run through the same search-configuration
+machinery to produce a sky localisation and waveform reconstruction for that
+one candidate. See this repository's README.md for the full rationale.
+"""
+
+import glob
+import os
+import shutil
+
+from importlib.resources import files
+
+from liquid import Liquid
+
+from asimov.pipeline import Pipeline, PipelineException
+
+
+class PyCWB(Pipeline):
+    """
+    The pycWB pipeline, wrapping its targeted/single-candidate follow-up mode.
+    """
+
+    name = "pycwb"
+    config_template = str(
+        files("asimov_pycwb").joinpath("templates/user_parameters.yaml.liquid")
+    )
+
+    def __init__(self, production, category=None):
+        super().__init__(production, category)
+        self.logger.info(
+            "Using the pycWB pipeline (targeted single-candidate reconstruction mode)"
+        )
+        self.dag_filename = None
+
+    # -- helpers -------------------------------------------------------
+
+    @property
+    def config_filename(self):
+        return os.path.join(self.production.rundir, "user_parameters.yaml")
+
+    def _render_config(self):
+        """
+        Render this production's ``user_parameters.yaml`` from the packaged
+        liquid template and asimov's production metadata.
+
+        Only the run/segment/IFO/data fields are templated here; the cWB
+        threshold and regulator parameters in the template are fixed
+        defaults (see the template's own comments and this plugin's
+        README.md for the list of TODOs).
+        """
+        os.makedirs(self.production.rundir, exist_ok=True)
+
+        meta = self.production.meta
+
+        ifos = meta.get("interferometers")
+        if not ifos:
+            raise PipelineException(
+                "No interferometers were specified in "
+                "production.meta['interferometers']",
+                production=self.production,
+            )
+
+        event_time = meta.get("event time")
+        if event_time is None:
+            raise PipelineException(
+                "No event time was specified in production.meta['event time']",
+                production=self.production,
+            )
+
+        scheduler_meta = meta.get("scheduler", {})
+        accounting_group = scheduler_meta.get("accounting group")
+        if not accounting_group:
+            raise PipelineException(
+                "No accounting group was specified in "
+                "production.meta['scheduler']['accounting group']",
+                production=self.production,
+            )
+
+        data_meta = meta.get("data", {})
+        quality_meta = meta.get("quality", {})
+        likelihood_meta = meta.get("likelihood", {})
+
+        # Targeted follow-up window: default to a symmetric window built
+        # from the (deprecated pesummary-style) "segment length" meta key
+        # if it's set, otherwise a 20-minute-per-side window, which is
+        # comfortably larger than the fixed segLen/segMLS defaults below.
+        window = data_meta.get("segment length", 2400)
+        time_left = data_meta.get("time before", window / 2)
+        time_right = data_meta.get("time after", window / 2)
+
+        min_freq = likelihood_meta.get("minimum frequency", {})
+        max_freq = likelihood_meta.get("maximum frequency", {})
+        f_low = min(min_freq.values()) if min_freq else 16.0
+        f_high = max(max_freq.values()) if max_freq else 1024.0
+
+        context = dict(
+            n_proc=scheduler_meta.get("n proc", 1),
+            ifos=ifos,
+            ref_ifo=meta.get("reference ifo", ifos[0]),
+            event_time=event_time,
+            time_left=time_left,
+            time_right=time_right,
+            f_low=f_low,
+            f_high=f_high,
+            channels=data_meta.get("channels", {}),
+            data_files=data_meta.get("data files", {}),
+            veto_files=quality_meta.get("veto files", {}),
+            accounting_group=accounting_group,
+            conda_env=scheduler_meta.get("conda environment", ""),
+            job_memory=scheduler_meta.get("memory", "6GB"),
+            job_disk=scheduler_meta.get("disk", "8GB"),
+        )
+
+        liq = Liquid(self.config_template)
+        rendered = liq.render(**context)
+
+        with open(self.config_filename, "w") as config_file:
+            config_file.write(rendered)
+
+        return self.config_filename
+
+    # -- Pipeline interface ----------------------------------------------
+
+    def build_dag(self, dryrun=False):
+        """
+        Render this production's pycWB config and build (but do not submit)
+        an HTCondor DAG for its targeted reconstruction run.
+        """
+        config_file = self._render_config()
+
+        if dryrun:
+            self.logger.info(f"Dry run: rendered pycWB config at {config_file}")
+            return
+
+        # Imported lazily so that importing this module (e.g. for the
+        # template-rendering unit tests) doesn't require pycWB's compiled
+        # cwb-core/ROOT dependencies to be installed.
+        from pycwb.modules.condor.condor import HTCondor
+        from pycwb.workflow.subflow.prepare_job_runs import prepare_job_runs
+
+        working_dir = os.path.abspath(self.production.rundir)
+
+        # HTCondor.create() interactively confirms before touching an
+        # existing condor/ directory, which would hang a non-interactive
+        # asimov run. Since build_dag() is meant to regenerate the DAG from
+        # scratch, clear it ourselves first.
+        condor_dir = os.path.join(working_dir, "condor")
+        if os.path.exists(condor_dir):
+            shutil.rmtree(condor_dir)
+
+        job_segments, config, working_dir = prepare_job_runs(
+            working_dir, config_file, overwrite=True
+        )
+
+        scheduler_meta = self.production.meta.get("scheduler", {})
+        condor = HTCondor(
+            working_dir=working_dir,
+            conda_env=scheduler_meta.get("conda environment") or None,
+            accounting_group=scheduler_meta.get("accounting group"),
+            n_proc=scheduler_meta.get("n proc", 1),
+            memory=scheduler_meta.get("memory", "6GB"),
+            disk=scheduler_meta.get("disk", "8GB"),
+        )
+        condor.create(job_segments, submit=False)
+
+        self.dag_filename = condor.dag_file
+        self.logger.info(f"Built pycWB condor DAG at {self.dag_filename}")
+
+    def submit_dag(self):
+        """
+        Submit this production's pre-built DAG to the configured scheduler.
+        """
+        if not self.dag_filename or not os.path.exists(self.dag_filename):
+            raise PipelineException(
+                "No DAG file has been built for this production; "
+                "run build_dag() first.",
+                production=self.production,
+            )
+
+        cluster_id = self.scheduler.submit_dag(
+            self.dag_filename,
+            batch_name=f"pycwb/{self.production.event.name}/{self.production.name}",
+        )
+        self.production.job_id = cluster_id
+        self.production.status = "running"
+        return cluster_id
+
+    def detect_completion(self):
+        """
+        A pycWB run is complete once its merge job has produced the final,
+        merged catalog for the run directory (the per-batch catalog
+        fragments are merged into this file by the DAG's ``merge`` node).
+        """
+        catalog_file = os.path.join(
+            self.production.rundir, "catalog", "catalog.parquet"
+        )
+        return os.path.exists(catalog_file)
+
+    def collect_assets(self):
+        """
+        Gather the analysis assets produced by this production's run.
+
+        This is best-effort until validated against a real run: the merged
+        catalog and per-trigger sky-map/waveform outputs are all pycWB
+        writes for a targeted run, and their exact layout may need
+        adjusting once this plugin has been exercised end-to-end.
+        """
+        rundir = self.production.rundir
+        assets = {}
+
+        catalog_file = os.path.join(rundir, "catalog", "catalog.parquet")
+        if os.path.exists(catalog_file):
+            assets["catalog"] = catalog_file
+
+        # TODO: pycWB writes sky-map statistics as a per-trigger JSON file
+        # (`skymap_statistics.json`, when `save_sky_map` is set), not as a
+        # FITS file. Asimov's base Pipeline.store_results() expects a
+        # `{production.name}_skymap.fits` file, which would be a natural
+        # fit for cWB's sky localisation output - but converting the JSON
+        # into an actual FITS skymap (e.g. via ligo.skymap/healpy) isn't
+        # implemented yet.
+        skymap_files = sorted(
+            glob.glob(os.path.join(rundir, "trigger", "*", "skymap_statistics.json"))
+        )
+        if skymap_files:
+            assets["skymap_statistics"] = skymap_files
+
+        # TODO: the DAG built by build_dag() only merges the catalog and
+        # progress files (`pycwb merge`, without `--wave`); per-job
+        # waveform reconstruction files are left unmerged in output/. A
+        # `pycwb merge --wave` step (e.g. in an after_completion() hook)
+        # would be needed to produce a single merged wave.h5.
+        waveform_files = sorted(glob.glob(os.path.join(rundir, "output", "wave_*.h5")))
+        if waveform_files:
+            assets["waveforms"] = waveform_files
+
+        return assets
