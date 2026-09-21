@@ -61,7 +61,16 @@ runs:
         PYCWB_DISABLE_WAT=1 "$CONDA_PYTHON" -m pip install \
           "pycwb @ git+https://github.com/PycWB/pycwb.git"
 
-        "$CONDA_PYTHON" -m pip install --force-reinstall -e ".[test]"
+        # No --force-reinstall here: asimov_pycwb's own pyproject.toml lists
+        # "pycWB" as an (unpinned) dependency, and --force-reinstall forces
+        # pip to rebuild *every* resolved dependency - including pycWB, via
+        # its normal PyPI index rather than the git+PYCWB_DISABLE_WAT=1
+        # install above - which fails the same cmake/ROOT build this test
+        # exists to route around (confirmed directly: this is exactly what
+        # broke this step's first real CI run). Plain pip only reinstalls a
+        # dependency if it isn't already satisfied, so the already-installed
+        # pycWB is left alone.
+        "$CONDA_PYTHON" -m pip install -e ".[test]"
         # Regular (non-editable) installs set explicit, world-readable
         # permissions from the wheel's RECORD; an editable install's
         # metadata (entry_points.txt etc.) is instead written fresh by pip
