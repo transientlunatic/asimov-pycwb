@@ -1,0 +1,77 @@
+name: 'Setup asimov-pycwb Environment'
+description: 'Install asimov-pycwb (and its asimov + pycWB dependencies) with conda'
+inputs:
+  python-version:
+    description: 'Python version to use'
+    default: '3.11'
+    required: false
+runs:
+  using: "composite"
+  steps:
+    - name: Cache conda packages and pip
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/share/miniconda/pkgs
+          ~/.cache/pip
+        key: conda-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+        restore-keys: |
+          conda-${{ runner.os }}-
+
+    - name: Set up conda environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniconda-version: "latest"
+        auto-activate-base: false
+        python-version: ${{ inputs.python-version }}
+        activate-environment: asimov
+        channels: conda-forge
+        use-mamba: true
+
+    - name: Cache asimov-pycwb conda env
+      id: cache-env
+      uses: actions/cache@v4
+      with:
+        path: /usr/share/miniconda/envs/asimov
+        key: conda-env-asimov-pycwb-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+        restore-keys: |
+          conda-env-asimov-pycwb-${{ runner.os }}-py${{ inputs.python-version }}-
+
+    - name: Install asimov-pycwb and pycWB
+      shell: bash -el {0}
+      run: |
+        git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+        CONDA_BASE="$("${CONDA_EXE:-conda}" info --base)"
+        CONDA_PYTHON="${CONDA_BASE}/envs/asimov/bin/python"
+        "$CONDA_PYTHON" -m ensurepip --upgrade
+
+        # pycWB on PyPI (`pip install pycWB`, this plugin's own declared
+        # dependency) requires a compiled cwb-core C++ extension against
+        # ROOT + healpix-cxx, which this environment doesn't build -- a real
+        # `pip install pycWB` here fails outright (confirmed while developing
+        # this test: it unconditionally invokes `cmake` against `cwb-core`).
+        # pycWB's unreleased `main` branch has a pure-Python install path
+        # instead: setting `PYCWB_DISABLE_WAT=1` skips the C++ wavelet
+        # extension entirely (see pycwb/setup.py and
+        # envs/Dockerfile.ci-native upstream), so a real, working pycWB
+        # installs from source with no ROOT/cwb-core at all. This e2e test
+        # uses that path so it exercises a genuine pycWB installation rather
+        # than skipping the test. Switch this to a plain PyPI install once a
+        # release ships with this flag.
+        PYCWB_DISABLE_WAT=1 "$CONDA_PYTHON" -m pip install \
+          "pycwb @ git+https://github.com/PycWB/pycwb.git"
+
+        "$CONDA_PYTHON" -m pip install --force-reinstall -e ".[test]"
+        # Regular (non-editable) installs set explicit, world-readable
+        # permissions from the wheel's RECORD; an editable install's
+        # metadata (entry_points.txt etc.) is instead written fresh by pip
+        # subject to the current process umask. This step runs as root, and
+        # under a restrictive root umask the resulting dist-info can end up
+        # unreadable by `submituser` -- which silently drops this package's
+        # `asimov.pipelines` entry point (asimov's own plugin loader catches
+        # and swallows the failure) rather than erroring here. Force
+        # everything world-readable so submituser can always see it.
+        chmod -R a+rX "$CONDA_BASE/envs/asimov"
+        echo "Installed asimov-pycwb from: $("$CONDA_PYTHON" -c 'import asimov_pycwb; print(asimov_pycwb.__file__)')"
+        echo "Installed asimov from: $("$CONDA_PYTHON" -c 'import asimov; print(asimov.__file__)')"
+        echo "Installed pycwb version: $("$CONDA_PYTHON" -c 'import pycwb; print(pycwb.__version__)')"

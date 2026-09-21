@@ -1,0 +1,19 @@
+# Test blueprint for the real pycWB production under test. Its
+# user_parameters.yaml is *not* generated from asimov_pycwb's bundled
+# config_template via this blueprint's metadata -- it is pre-seeded
+# directly into the test event's git repository (see e2e.yml's "Seed the
+# pycWB config fixture" step) as a real, hand-validated pycWB config using
+# synthetic Gaussian noise and a single sine-Gaussian burst injection, with
+# a short (16s) segment so the whole run completes for real in well under a
+# minute rather than requiring real strain data or a production-length
+# search segment.
+#
+# The config_template/Liquid rendering path is exercised separately by
+# tests/test_pipeline_template.py, not by this e2e test.
+kind: analysis
+name: pycwb-test
+pipeline: pycwb
+comment: pycWB end-to-end test production (synthetic noise, sine-Gaussian injection)
+status: ready
+scheduler:
+  accounting group: "ligo.dev.o4.burst.allsky.cwboffline"

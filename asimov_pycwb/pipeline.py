@@ -47,6 +47,29 @@ class PyCWB(Pipeline):
     def config_filename(self):
         return os.path.join(self.production.rundir, "user_parameters.yaml")
 
+    def _find_existing_config(self):
+        """
+        Look for a ``user_parameters.yaml`` already checked into the event
+        repository for this production (e.g. ``checkouts/<EVENT>/analyses/
+        <production name>.yaml``), so a hand-written config can be used
+        as-is instead of being rendered from the liquid template.
+
+        asimov's own ``Analysis.event.repository.find_prods()`` always
+        assumes a ``.ini`` extension, so it can't be reused directly for
+        pycWB's YAML config; this mirrors its category/path convention
+        with a ``.yaml`` extension instead. Returns ``None`` if there is no
+        repository, or no matching file exists yet.
+        """
+        repository = getattr(self.production.event, "repository", None)
+        if not repository:
+            return None
+
+        category = self.category or "analyses"
+        candidate = os.path.join(
+            repository.directory, category, f"{self.production.name}.yaml"
+        )
+        return candidate if os.path.exists(candidate) else None
+
     def _render_config(self):
         """
         Render this production's ``user_parameters.yaml`` from the packaged
@@ -134,8 +157,14 @@ class PyCWB(Pipeline):
         """
         Render this production's pycWB config and build (but do not submit)
         an HTCondor DAG for its targeted reconstruction run.
+
+        If a ``user_parameters.yaml`` already exists for this production in
+        the event repository, it is used as-is instead of being rendered
+        from the template - this is the escape hatch for anything the
+        template doesn't (yet) cover, such as injections into synthetic
+        noise (see ``_find_existing_config`` and this plugin's README).
         """
-        config_file = self._render_config()
+        config_file = self._find_existing_config() or self._render_config()
 
         if dryrun:
             self.logger.info(f"Dry run: rendered pycWB config at {config_file}")

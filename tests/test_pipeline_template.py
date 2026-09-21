@@ -13,17 +13,23 @@ import yaml
 from asimov_pycwb.pipeline import PyCWB
 
 
+class FakeRepository:
+    def __init__(self, directory):
+        self.directory = str(directory)
+
+
 class FakeEvent:
-    def __init__(self, name):
+    def __init__(self, name, repository=None):
         self.name = name
+        self.repository = repository
 
 
 class FakeProduction:
     """A minimal stand-in for asimov.analysis.Analysis, just enough for
     asimov.pipeline.Pipeline.__init__ and PyCWB._render_config to run."""
 
-    def __init__(self, rundir, meta):
-        self.event = FakeEvent("GW150914_095045")
+    def __init__(self, rundir, meta, repository=None):
+        self.event = FakeEvent("GW150914_095045", repository=repository)
         self.name = "pycwb-test"
         self.category = None
         self.rundir = str(rundir)
@@ -119,3 +125,46 @@ def test_missing_accounting_group_raises(tmp_path):
         raised = True
 
     assert raised
+
+
+def test_find_existing_config_returns_none_without_repository(tmp_path):
+    production = FakeProduction(tmp_path, make_meta())
+    pipeline = PyCWB(production)
+
+    assert pipeline._find_existing_config() is None
+
+
+def test_find_existing_config_returns_none_when_file_missing(tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    production = FakeProduction(tmp_path, make_meta(), repository=FakeRepository(repo_dir))
+    pipeline = PyCWB(production)
+
+    assert pipeline._find_existing_config() is None
+
+
+def test_find_existing_config_finds_preseeded_yaml(tmp_path):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "analyses").mkdir(parents=True)
+    preseeded = repo_dir / "analyses" / "pycwb-test.yaml"
+    preseeded.write_text("outputDir: output\n")
+    production = FakeProduction(tmp_path, make_meta(), repository=FakeRepository(repo_dir))
+    pipeline = PyCWB(production)
+
+    assert pipeline._find_existing_config() == str(preseeded)
+
+
+def test_build_dag_dryrun_prefers_preseeded_config(tmp_path, capsys):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "analyses").mkdir(parents=True)
+    preseeded = repo_dir / "analyses" / "pycwb-test.yaml"
+    preseeded.write_text("outputDir: output\n")
+    production = FakeProduction(tmp_path, make_meta(), repository=FakeRepository(repo_dir))
+    pipeline = PyCWB(production)
+
+    # dryrun=True only logs the resolved config path; it must not attempt to
+    # render the template (which would overwrite the pre-seeded file) or
+    # import pycWB.
+    pipeline.build_dag(dryrun=True)
+
+    assert preseeded.read_text() == "outputDir: output\n"

@@ -72,11 +72,71 @@ configuration. See the comments in
 [`asimov_pycwb/templates/user_parameters.yaml.liquid`](asimov_pycwb/templates/user_parameters.yaml.liquid)
 for the full list.
 
+### Escape hatch: pre-seeding a real config
+
+The template above deliberately doesn't cover everything pycWB can do (for
+example, injections into synthetic noise, or hand-tuned thresholds). If a
+file named `<production name>.yaml` already exists in the event
+repository's `analyses/` directory (asimov's own `general.calibration_directory`
+config value, `analyses` by default) when `build_dag` runs, it's used
+directly instead of being rendered from the template — the same "pre-seed
+a real config" convention other asimov pipelines use for a `.ini` file via
+`event.repository.find_prods()` (this plugin can't reuse that helper
+directly, since it hardcodes a `.ini` extension). This is how this
+plugin's own end-to-end test (see below) exercises a real pycWB config
+that the template doesn't yet support.
+
+## End-to-end test
+
+[`.github/workflows/e2e.yml`](.github/workflows/e2e.yml) runs a real pycWB
+analysis against a real HTCondor pool (in a `htcondor/mini` container,
+using the same `etive-io/actions` reusable actions as the sibling
+`asimov-pycbc`/`asimov-pesummary` plugins): a genuine `asimov apply` +
+`asimov manage build submit`, building and submitting a real DAG, then
+waiting for pycWB's real merge step to produce a real, readable
+`catalog.parquet`.
+
+The test production's config is pre-seeded (see above), using pycWB's
+built-in synthetic Gaussian noise generation and a single sine-Gaussian
+burst injection (`injection.noise` / `injection.parameters` — see
+`pycwb.modules.job_segment.job_segment`), rather than real strain data, so
+the whole run is self-contained and fast. This needed two things this
+plugin didn't otherwise need to know about, both worth flagging clearly:
+
+- **pycWB on PyPI (`pip install pycWB`, this plugin's declared dependency)
+  cannot actually be installed in an ordinary CI environment.** It
+  unconditionally tries to build a compiled `cwb-core` C++ extension
+  against ROOT + healpix-cxx (confirmed directly: a plain `pip install
+  pycWB` fails outright without them). pycWB's unreleased `main` branch has
+  a pure-Python install path instead (`PYCWB_DISABLE_WAT=1` skips the C++
+  wavelet extension — see `pycwb/setup.py` and
+  `envs/Dockerfile.ci-native` upstream), which is what
+  `.github/actions/setup-pycwb-env` uses to install a real, working pycWB
+  with no ROOT/cwb-core at all. Switch this to a plain PyPI install once a
+  release ships with that flag.
+- **pycWB downloads a small (~54 MB), public, Git-LFS-hosted wavelet
+  cross-talk catalog on first use** (`pycwb.modules.xtalk`, from
+  `github.com/PycWB/xtalk-data`). This is unrelated to the ROOT/cwb-core
+  extension above and needs no credentials, but it does need a real
+  internet connection — this development environment's network access
+  didn't extend to that repository, so this exact download path (and the
+  full run that depends on it) could not be exercised directly while
+  writing this workflow. Everything up to that download — pycWB installing
+  and importing cleanly, the config schema, and job-segment/injection
+  construction — *was* verified directly by running pycWB's own source
+  against this exact config (substituting a placeholder file only for the
+  catalog's binary content, which is checked for internal consistency
+  against `l_low`/`l_high`/`levelR` but isn't otherwise needed to build a
+  DAG). Treat the first real CI run of this workflow as the actual
+  end-to-end validation, and expect it may need a round of fixes.
+
 ## What's implemented
 
-- `build_dag`: renders `user_parameters.yaml` from the template above, then
-  calls pycWB's `prepare_job_runs` + `HTCondor(...).create(..., submit=False)`
-  to generate a real HTCondor DAGMan workflow (`condor/*.dag`) without
+- `build_dag`: if a `<production name>.yaml` already exists in the event
+  repository's `analyses/` directory, uses it as-is; otherwise renders
+  `user_parameters.yaml` from the template above. Either way it then calls
+  pycWB's `prepare_job_runs` + `HTCondor(...).create(..., submit=False)` to
+  generate a real HTCondor DAGMan workflow (`condor/*.dag`) without
   submitting it.
 - `submit_dag`: submits the pre-built DAG via asimov's configured
   `scheduler.submit_dag()`, and records the returned cluster ID as
@@ -89,9 +149,11 @@ for the full list.
 
 ## Known limitations / TODOs
 
-This is a first-pass scaffold, written by reading pycWB's and asimov's
-source rather than by testing against a real run — treat all of the
-following as unverified until exercised end-to-end:
+This is a first-pass scaffold. Most of it was written by reading pycWB's
+and asimov's source rather than by testing against a real run; an
+end-to-end test now exercises a real pycWB run against real HTCondor (see
+above), but it hasn't actually been run in CI yet as of this plugin's
+current state, so treat the following as unverified until it has:
 
 - **Only run/segment/IFO/data fields are templated.** cWB's analysis
   thresholds and regulators are fixed defaults; there's no blueprint-level
@@ -112,8 +174,11 @@ following as unverified until exercised end-to-end:
   `output/wave_*.h5` files are left unmerged. Merging them would need an
   extra `pycwb merge --wave` DAG node or an `after_completion()` hook.
 - **`detect_completion`/`collect_assets` are best-effort.** They're based
-  on reading pycWB's merge/output code, not on watching a real run
-  complete — the exact paths may need adjusting.
+  on reading pycWB's merge/output code. The e2e test exercises
+  `detect_completion`'s `catalog.parquet` check against a real merge, but
+  not `collect_assets`'s skymap/waveform paths (the tiny test config
+  doesn't reliably guarantee a detected trigger, and its DAG doesn't merge
+  waveforms at all — see below) — those may still need adjusting.
 - **No GraceDB upload integration.** pycWB has `pycwb.modules.gracedb` for
   this; it isn't wired up here.
 - **Re-running `build_dag` is destructive.** pycWB's `HTCondor.create()`
@@ -129,6 +194,13 @@ following as unverified until exercised end-to-end:
 pip install -e .[test]
 pytest
 ```
+
+The unit test suite only covers config-template rendering and the
+pre-seeded-config lookup (`PyCWB._render_config`/`_find_existing_config`,
+via `asimov.pipeline.Pipeline`), since that only depends on `asimov` and
+`liquidpy`. `build_dag`/`submit_dag`'s pycWB-calling code isn't unit
+tested — it's covered instead by the end-to-end workflow described above,
+which runs a real pycWB installation against a real HTCondor pool.
 
 The test suite only covers config-template rendering (`PyCWB._render_config`,
 via `asimov.pipeline.Pipeline`), since that only depends on `asimov` and
