@@ -201,7 +201,10 @@ class PyCWB(Pipeline):
         )
         condor.create(job_segments, submit=False)
 
-        self.dag_filename = condor.dag_file
+        # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
+        # asimov's own scheduler.submit_dag() passes it straight to
+        # htcondor2.Submit.from_dag(), which requires a plain str.
+        self.dag_filename = str(condor.dag_file)
         self.logger.info(f"Built pycWB condor DAG at {self.dag_filename}")
 
     def submit_dag(self, dryrun=False):
