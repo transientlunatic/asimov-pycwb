@@ -299,7 +299,11 @@ jobs:
         with:
           script: |
             cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
-            sleep 30
+            # 30s wasn't enough last time: the batch job was still mid-run
+            # ("1 running, 0 held") at the 30s mark and only held ~10s
+            # later, so the earlier snapshot of its .err file was captured
+            # before the real (post-PATH-fix) failure was even written.
+            sleep 90
             echo "--- condor_q -allusers -hold ---"
             condor_q -allusers -hold || true
             echo "--- log/ directory listing ---"
