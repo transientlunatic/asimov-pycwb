@@ -287,6 +287,29 @@ jobs:
             echo "--- condor/merge.sub ---"
             cat condor/merge.sub || echo "(missing)"
 
+      # Temporary diagnostic step: with the cwd and scitokens fixes, both
+      # node jobs now actually run - but pycwb_batch:0 held with "The job
+      # attribute OnExitHold expression '(ExitCode != 0)' evaluated to
+      # TRUE" (pycWB's own condor.py sets on_exit_hold = (ExitCode != 0)
+      # on the batch job specifically), meaning pycwb batch-runner itself
+      # exited nonzero. Give it time to actually finish (or hold) and dump
+      # its real stdout/stderr to see why.
+      - name: "Debug: dump batch/merge job logs after they run"
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
+            sleep 30
+            echo "--- condor_q -allusers -hold ---"
+            condor_q -allusers -hold || true
+            echo "--- log/ directory listing ---"
+            ls -la log/ || echo "(no log dir)"
+            for f in log/*.out log/*.err log/*.log; do
+              [ -e "$f" ] || continue
+              echo ">>> $f"
+              cat "$f"
+            done
+
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
       # catalog.parquet is *not* used here: pycWB creates it, empty, back
