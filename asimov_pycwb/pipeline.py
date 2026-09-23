@@ -280,10 +280,24 @@ class PyCWB(Pipeline):
             self.logger.info(f"Dry run: would submit DAG at {self.dag_filename}")
             return None
 
-        cluster_id = self.scheduler.submit_dag(
-            self.dag_filename,
-            batch_name=f"pycwb/{self.production.event.name}/{self.production.name}",
-        )
+        # HTCondor resolves the relative submit-file paths inside a DAG
+        # (pycWB's own condor.py writes e.g. "JOB pycwb_batch:0
+        # pycwb_batch.sub", with no directory prefix) against the
+        # submitting process's own working directory at submission time -
+        # not against the .dag file's directory (that's what -usedagdir is
+        # for, which asimov's scheduler doesn't pass). Confirmed directly:
+        # submitting from asimov's own project root left DAGMan unable to
+        # open "pycwb_batch.sub" at all (errno=2), aborting the DAG before
+        # any node ever queued. Submit from the DAG's own directory instead.
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(os.path.dirname(self.dag_filename))
+            cluster_id = self.scheduler.submit_dag(
+                self.dag_filename,
+                batch_name=f"pycwb/{self.production.event.name}/{self.production.name}",
+            )
+        finally:
+            os.chdir(original_cwd)
         self.production.job_id = cluster_id
         self.production.status = "running"
         return cluster_id
