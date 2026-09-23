@@ -309,6 +309,13 @@ class PyCWB(Pipeline):
                         continue
                     with open(script_path) as f:
                         lines = f.readlines()
+                    # Also force unbuffered Python output: pycwb_batch has
+                    # been exiting nonzero with nothing useful in its own
+                    # .err file at all (not even a traceback) on this test
+                    # pool, which is consistent with output sitting in a
+                    # buffer that never gets flushed before the process
+                    # (or one of its multiprocessing workers) tears down.
+                    lines.insert(1, "export PYTHONUNBUFFERED=1\n")
                     lines.insert(1, f'export PATH="{pycwb_bin_dir}:$PATH"\n')
                     with open(script_path, "w") as f:
                         f.writelines(lines)
