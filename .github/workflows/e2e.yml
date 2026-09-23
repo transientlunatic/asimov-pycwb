@@ -246,20 +246,25 @@ jobs:
             cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
             echo "--- Full DAG file (condor/pycwb-test.dag) ---"
             cat condor/pycwb-test.dag
+            # Give DAGMan a few seconds to run (or crash) and flush its log,
+            # since the previous attempt at this diagnostic caught it too
+            # early: condor_q showed the condor_dagman job running for the
+            # very first poll, then gone by the next poll ~0.1s later.
+            sleep 5
             echo "--- condor/ directory listing ---"
-            find condor -maxdepth 1 -type f
+            ls -la condor/
             echo "--- condor_q -allusers -nobatch ---"
             condor_q -allusers -nobatch || true
-            echo "--- condor_q -allusers -hold ---"
-            condor_q -allusers -hold || true
-            echo "--- condor_history -all ---"
-            condor_history -all || true
-            echo "--- any *.dagman.out files ---"
-            for f in condor/*.dagman.out; do
-              [ -e "$f" ] || continue
-              echo ">>> $f"
-              cat "$f"
-            done
+            echo "--- condor_history (default) ---"
+            condor_history || true
+            echo "--- condor/pycwb-test.dag.dagman.out ---"
+            cat condor/pycwb-test.dag.dagman.out || echo "(missing)"
+            echo "--- condor/pycwb-test.dag.lib.out ---"
+            cat condor/pycwb-test.dag.lib.out || echo "(missing)"
+            echo "--- condor/pycwb-test.dag.lib.err ---"
+            cat condor/pycwb-test.dag.lib.err || echo "(missing)"
+            echo "--- condor/pycwb-test.dag.nodes.log ---"
+            cat condor/pycwb-test.dag.nodes.log || echo "(missing)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
