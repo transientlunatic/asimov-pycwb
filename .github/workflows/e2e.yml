@@ -170,6 +170,17 @@ jobs:
             l_low: 4
             l_high: 10
 
+            # pycwb_batch's worker process was crashing silently (no
+            # Python traceback at all - the job's own log just stopped
+            # mid-run, and HTCondor's job event log showed it held only
+            # ~3s after its last resource-usage sample) under the default
+            # "jax" backend for coherence's time-delay max-energy maps -
+            # most likely a JAX/XLA compatibility issue in this minimal,
+            # GPU-less container. "numba" is a supported alternative
+            # backend (see pycwb.constants.user_parameters_schema) that
+            # avoids JAX entirely.
+            max_energy_backend: "numba"
+
             wdmXTalk: "wdmXTalk/OverlapCatalog16-1024.bin"
             healpix: 3
 
