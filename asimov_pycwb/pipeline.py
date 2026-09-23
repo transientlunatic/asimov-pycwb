@@ -286,40 +286,38 @@ class PyCWB(Pipeline):
         # "set -e") and then fails with "pycwb: command not found", since
         # HTCondor's vanilla universe jobs don't inherit the submitting
         # shell's PATH by default. Confirmed directly in the job's own
-        # stderr. This passes through just the submitting process's PATH
-        # (which does have pycwb on it here) via the submit file's own
-        # "environment" attribute, rather than "getenv = True": many shared
-        # pools disable blanket environment forwarding entirely (it is
-        # also less reproducible, since it pulls in whatever the submit
-        # host happened to have set), so this is the more portable fix.
+        # stderr - and confirmed that setting the submit file's own
+        # "environment = PATH=..." attribute directly does *not* reliably
+        # fix it either: DAGMan submits each node job itself ("using direct
+        # job submission"), so a node's environment is whatever DAGMan's own
+        # process resolves, not this Python process's. Patching the actual
+        # job scripts sidesteps that ambiguity entirely: prepend the
+        # directory this process itself resolves "pycwb" from onto PATH,
+        # before pycWB's own (failing, in a CVMFS-less pool) attempt to
+        # source an environment. Deliberately not "getenv = True": many
+        # shared pools disable blanket environment forwarding entirely, and
+        # it would still be exactly the wrong process's environment here.
         # Off by default: a real deployment's run.sh is meant to activate
         # its own environment via cvmfs, independent of whatever submitted
         # the DAG.
         if scheduler_meta.get("inherit environment", False):
-            path_value = os.environ.get("PATH", "")
-            for sub_file in glob.glob(os.path.join(working_dir, "condor", "*.sub")):
-                with open(sub_file) as f:
-                    lines = f.readlines()
-                out_lines = []
-                merged_into_existing = False
-                for line in lines:
-                    # pycWB may already have written its own "environment ="
-                    # line (e.g. the scitokens BEARER_TOKEN_FILE one, if
-                    # "strip oauth credentials" above wasn't also set) -
-                    # extend it rather than adding a second, conflicting one.
-                    # This is HTCondor's old-style ";"-separated environment
-                    # syntax, matching what pycWB itself already writes here.
-                    if line.strip().startswith("environment ="):
-                        line = line.rstrip("\n") + f";PATH={path_value}\n"
-                        merged_into_existing = True
-                    out_lines.append(line)
-                if not merged_into_existing:
-                    for i in range(len(out_lines) - 1, -1, -1):
-                        if out_lines[i].strip() == "queue":
-                            out_lines.insert(i, f"environment = PATH={path_value}\n")
-                            break
-                with open(sub_file, "w") as f:
-                    f.writelines(out_lines)
+            pycwb_bin_dir = os.path.dirname(shutil.which("pycwb") or "")
+            if pycwb_bin_dir:
+                for script_name in ("run.sh", "simulation_summary.sh", "merge.sh"):
+                    script_path = os.path.join(working_dir, "condor", script_name)
+                    if not os.path.exists(script_path):
+                        continue
+                    with open(script_path) as f:
+                        lines = f.readlines()
+                    lines.insert(1, f'export PATH="{pycwb_bin_dir}:$PATH"\n')
+                    with open(script_path, "w") as f:
+                        f.writelines(lines)
+            else:
+                self.logger.warning(
+                    "scheduler.inherit environment is set, but 'pycwb' "
+                    "isn't on PATH in this process either - nothing to "
+                    "add to the job scripts' PATH."
+                )
 
         # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
         # asimov's own scheduler.submit_dag() passes it straight to
