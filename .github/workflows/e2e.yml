@@ -358,6 +358,24 @@ jobs:
             echo "--- dmesg tail (OOM-kill check, best-effort) ---"
             dmesg 2>/dev/null | tail -50 || echo "(dmesg unavailable)"
 
+      # Temporary diagnostic step: neither the jax->numba backend switch
+      # nor a larger /dev/shm nor unbuffered output changed pycwb_batch's
+      # failure at all - identical silent stop right after "Starting 1
+      # workers" / "Terminating worker processes...", no traceback ever,
+      # every single time. That's now suspicious of something about
+      # HTCondor's own job execution environment itself (cgroup/namespace
+      # sandboxing, resource limits) rather than pycWB/numba/jax. Run the
+      # exact same command directly as a plain shell command, completely
+      # bypassing HTCondor, to see whether it's an HTCondor-execution
+      # issue or a pycWB/container issue independent of condor.
+      - name: "Debug: run pycwb batch-runner directly, bypassing HTCondor"
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
+            echo "--- Running pycwb batch-runner directly (no HTCondor) ---"
+            pycwb batch-runner config/user_parameters.yaml --work-dir=/__w/asimov-pycwb/asimov-pycwb/e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test --jobs=1-1 --n-proc=1 2>&1 && echo "MANUAL RUN SUCCEEDED" || echo "MANUAL RUN FAILED (see output above)"
+
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
       # catalog.parquet is *not* used here: pycWB creates it, empty, back
