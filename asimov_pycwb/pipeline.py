@@ -286,21 +286,40 @@ class PyCWB(Pipeline):
         # "set -e") and then fails with "pycwb: command not found", since
         # HTCondor's vanilla universe jobs don't inherit the submitting
         # shell's PATH by default. Confirmed directly in the job's own
-        # stderr. Setting "getenv = True" makes the job inherit the
-        # environment (including PATH) that was active when asimov itself
-        # submitted the DAG, which is enough on a test pool where that's
-        # already the right conda environment. Off by default: a real
-        # deployment's run.sh is meant to activate its own environment via
-        # cvmfs, independent of whatever submitted the DAG.
+        # stderr. This passes through just the submitting process's PATH
+        # (which does have pycwb on it here) via the submit file's own
+        # "environment" attribute, rather than "getenv = True": many shared
+        # pools disable blanket environment forwarding entirely (it is
+        # also less reproducible, since it pulls in whatever the submit
+        # host happened to have set), so this is the more portable fix.
+        # Off by default: a real deployment's run.sh is meant to activate
+        # its own environment via cvmfs, independent of whatever submitted
+        # the DAG.
         if scheduler_meta.get("inherit environment", False):
+            path_value = os.environ.get("PATH", "")
             for sub_file in glob.glob(os.path.join(working_dir, "condor", "*.sub")):
                 with open(sub_file) as f:
                     lines = f.readlines()
+                out_lines = []
+                merged_into_existing = False
+                for line in lines:
+                    # pycWB may already have written its own "environment ="
+                    # line (e.g. the scitokens BEARER_TOKEN_FILE one, if
+                    # "strip oauth credentials" above wasn't also set) -
+                    # extend it rather than adding a second, conflicting one.
+                    # This is HTCondor's old-style ";"-separated environment
+                    # syntax, matching what pycWB itself already writes here.
+                    if line.strip().startswith("environment ="):
+                        line = line.rstrip("\n") + f";PATH={path_value}\n"
+                        merged_into_existing = True
+                    out_lines.append(line)
+                if not merged_into_existing:
+                    for i in range(len(out_lines) - 1, -1, -1):
+                        if out_lines[i].strip() == "queue":
+                            out_lines.insert(i, f"environment = PATH={path_value}\n")
+                            break
                 with open(sub_file, "w") as f:
-                    for line in lines:
-                        if line.strip() == "queue":
-                            f.write("getenv = True\n")
-                        f.write(line)
+                    f.writelines(out_lines)
 
         # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
         # asimov's own scheduler.submit_dag() passes it straight to
