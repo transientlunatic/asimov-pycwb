@@ -323,6 +323,17 @@ jobs:
             cat log/simulation_summary.out || echo "(missing)"
             echo "--- log/simulation_summary.err ---"
             cat log/simulation_summary.err || echo "(missing)"
+            # batch-1-1.out/.err show pycwb starting cleanly (config
+            # loaded, workers started) then just stop - no Python
+            # traceback at all. That pattern (silent stop, no exception)
+            # points at the worker process being killed by a signal
+            # (OOM-kill or a native/jax crash) rather than a normal
+            # nonzero exit. HTCondor's own job event log records the
+            # actual termination signal/exit code and resource usage.
+            echo "--- log/batch-1-1.log (HTCondor job event log) ---"
+            cat log/batch-1-1.log || echo "(missing)"
+            echo "--- dmesg tail (OOM-kill check, best-effort) ---"
+            dmesg 2>/dev/null | tail -50 || echo "(dmesg unavailable)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
