@@ -280,6 +280,12 @@ jobs:
             cat condor/pycwb-test.dag.lib.err || echo "(missing)"
             echo "--- condor/pycwb-test.dag.nodes.log ---"
             cat condor/pycwb-test.dag.nodes.log || echo "(missing)"
+            echo "--- condor/pycwb_batch.sub ---"
+            cat condor/pycwb_batch.sub || echo "(missing)"
+            echo "--- condor/simulation_summary.sub ---"
+            cat condor/simulation_summary.sub || echo "(missing)"
+            echo "--- condor/merge.sub ---"
+            cat condor/merge.sub || echo "(missing)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
