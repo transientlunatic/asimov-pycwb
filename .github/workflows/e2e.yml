@@ -233,6 +233,34 @@ jobs:
             grep -q "config/user_parameters.yaml" working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
             test -f working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/pycwb-test.dag
 
+      # Temporary diagnostic step: the previous run submitted a DAG (asimov
+      # logged "Submitted ...") but condor_q showed zero jobs for the
+      # entire 600s wait, and progress.parquet never appeared. This prints
+      # the full DAG description and whatever DAGMan/condor state exists
+      # immediately after submission, to see whether the DAG actually has
+      # any work nodes and whether DAGMan itself ever ran.
+      - name: "Debug: inspect DAGMan/condor state right after submission"
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
+            echo "--- Full DAG file (condor/pycwb-test.dag) ---"
+            cat condor/pycwb-test.dag
+            echo "--- condor/ directory listing ---"
+            find condor -maxdepth 1 -type f
+            echo "--- condor_q -allusers -nobatch ---"
+            condor_q -allusers -nobatch || true
+            echo "--- condor_q -allusers -hold ---"
+            condor_q -allusers -hold || true
+            echo "--- condor_history -all ---"
+            condor_history -all || true
+            echo "--- any *.dagman.out files ---"
+            for f in condor/*.dagman.out; do
+              [ -e "$f" ] || continue
+              echo ">>> $f"
+              cat "$f"
+            done
+
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
       # catalog.parquet is *not* used here: pycWB creates it, empty, back
