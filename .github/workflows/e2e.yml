@@ -42,6 +42,21 @@ jobs:
       - name: Create submit user
         uses: etive-io/actions/create-submit-user@v1
 
+      # By default DAGMan tries to fetch OAuth/Kerberos-style job
+      # credentials from a credd for every node job it submits
+      # (DAGMAN_PRODUCE_JOB_CREDENTIALS). This minimal test pool has no
+      # credd and the daemon can't even read /etc/condor/passwords.d
+      # (Permission denied), so every node submission failed outright:
+      # "ERROR: on Line N of submit file: Failed to produce job
+      # credentials: Can't find address of credd" - confirmed directly in
+      # condor_dagman's own dagman.out. None of pycWB's jobs need
+      # credentials, so just turn this off for the pool.
+      - name: Disable DAGMan job credential production
+        run: |
+          mkdir -p /etc/condor/config.d
+          echo "DAGMAN_PRODUCE_JOB_CREDENTIALS = False" > /etc/condor/config.d/99-no-job-credentials.conf
+          condor_reconfig || true
+
       - name: Ensure submituser can access workspace
         run: |
           mkdir -p "$GITHUB_WORKSPACE/e2e_project"
