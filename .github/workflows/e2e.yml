@@ -304,11 +304,21 @@ jobs:
             condor_q -allusers -hold || true
             echo "--- log/ directory listing ---"
             ls -la log/ || echo "(no log dir)"
-            for f in log/*.out log/*.err log/*.log; do
-              [ -e "$f" ] || continue
-              echo ">>> $f"
-              cat "$f"
-            done
+            # run-asimov-command wraps this script in an *unquoted* heredoc
+            # (su - submituser <<SUBMITUSER), so the outer shell expands any
+            # $variable here to empty before the inner shell ever runs it -
+            # confirmed directly: an earlier "for f in log/*..." loop using
+            # "$f" produced zero output even though the files existed,
+            # because "$f" was already blanked out by the outer shell. Cat
+            # the known filenames directly instead of using a shell variable.
+            echo "--- log/batch-1-1.out ---"
+            cat log/batch-1-1.out || echo "(missing)"
+            echo "--- log/batch-1-1.err ---"
+            cat log/batch-1-1.err || echo "(missing)"
+            echo "--- log/simulation_summary.out ---"
+            cat log/simulation_summary.out || echo "(missing)"
+            echo "--- log/simulation_summary.err ---"
+            cat log/simulation_summary.err || echo "(missing)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
