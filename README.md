@@ -60,6 +60,7 @@ data-fetching pipelines such as `asimov-gwdata`):
 | `scheduler.accounting group` | HTCondor `accounting_group` (**required**) |
 | `scheduler.n proc`, `.conda environment`, `.request memory`, `.request disk` | job submission parameters |
 | `scheduler.strip oauth credentials` | strips pycWB's hardcoded `use_oauth_services = scitokens` submit-file requirement (see below) — **only** for test/local pools with no SciTokens credmon; leave unset for real deployments |
+| `scheduler.inherit environment` | adds `getenv = True` to every submit file, so jobs inherit the submitting process's `PATH` (see below) — **only** for test/local pools with no CVMFS; leave unset for real deployments |
 | `data.channels` | `channelNamesRaw` |
 | `data.data files` | `frFiles` (a generated per-IFO frame-cache list file, written from whichever frame path(s) `asimov-gwdata` or similar provides — string or list, one frame path per line) |
 | `data.segment length`, `.time before`, `.time after` | the `time_left`/`time_right` follow-up window around `event time` |
@@ -132,6 +133,17 @@ plugin didn't otherwise need to know about, both worth flagging clearly:
   `scheduler.strip oauth credentials` is set (see the metadata table
   above) — opt-in, and only meant for credmon-less test/local pools like
   this one.
+- **pycWB's generated job scripts (`run.sh`, `simulation_summary.sh`,
+  `merge.sh`) each start by sourcing a hardcoded
+  `/cvmfs/software.igwn.org/conda/etc/profile.d/conda.sh`.** A real IGWN
+  pool provides that path via CVMFS; this minimal test pool has no CVMFS
+  at all, so that `source` fails (silently — the script has no `set -e`)
+  and the job then fails with `pycwb: command not found`, since HTCondor's
+  vanilla-universe jobs don't inherit the submitting shell's `PATH` by
+  default. `scheduler.inherit environment` (see the metadata table above)
+  has `build_dag()` add `getenv = True` to every submit file instead, so
+  jobs inherit the environment that was active when asimov submitted the
+  DAG — again opt-in, and only meant for CVMFS-less test/local pools.
 
 This workflow is green: a real DAG is submitted to a real HTCondor pool,
 the batch analysis job and merge node both run for real over synthetic

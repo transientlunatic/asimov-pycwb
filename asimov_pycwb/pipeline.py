@@ -278,6 +278,30 @@ class PyCWB(Pipeline):
                         and not line.strip().startswith("environment = BEARER_TOKEN_FILE")
                     )
 
+        # pycWB's generated run.sh/simulation_summary.sh/merge.sh each start
+        # by sourcing a hardcoded "/cvmfs/software.igwn.org/conda/etc/
+        # profile.d/conda.sh" before running the "pycwb" command - real IGWN
+        # pools have that path via CVMFS; a pool without it (like this
+        # plugin's own end-to-end test) fails that source silently (no
+        # "set -e") and then fails with "pycwb: command not found", since
+        # HTCondor's vanilla universe jobs don't inherit the submitting
+        # shell's PATH by default. Confirmed directly in the job's own
+        # stderr. Setting "getenv = True" makes the job inherit the
+        # environment (including PATH) that was active when asimov itself
+        # submitted the DAG, which is enough on a test pool where that's
+        # already the right conda environment. Off by default: a real
+        # deployment's run.sh is meant to activate its own environment via
+        # cvmfs, independent of whatever submitted the DAG.
+        if scheduler_meta.get("inherit environment", False):
+            for sub_file in glob.glob(os.path.join(working_dir, "condor", "*.sub")):
+                with open(sub_file) as f:
+                    lines = f.readlines()
+                with open(sub_file, "w") as f:
+                    for line in lines:
+                        if line.strip() == "queue":
+                            f.write("getenv = True\n")
+                        f.write(line)
+
         # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
         # asimov's own scheduler.submit_dag() passes it straight to
         # htcondor2.Submit.from_dag(), which requires a plain str.

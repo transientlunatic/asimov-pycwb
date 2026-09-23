@@ -23,3 +23,9 @@ scheduler:
   # not available" otherwise. This test uses only synthetic noise and
   # needs no real credentials. See build_dag()'s handling of this key.
   strip oauth credentials: true
+  # This test pool also has no CVMFS, so pycWB's generated job scripts
+  # can't source their hardcoded igwn-conda profile and "pycwb" ends up
+  # not on PATH inside the job. Have jobs inherit the environment that was
+  # active when the DAG was submitted (which does have pycwb on PATH)
+  # instead. See build_dag()'s handling of this key.
+  inherit environment: true
