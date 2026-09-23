@@ -23,7 +23,17 @@ jobs:
     timeout-minutes: 30
     container:
       image: htcondor/mini:latest
-      options: --privileged
+      # --shm-size: Docker's default /dev/shm is 64MB. pycwb_batch's
+      # worker process was crashing completely silently (no Python
+      # traceback in stdout or stderr, no HTCondor "abnormal termination"
+      # detail - just stops right where multiprocessing starts handing
+      # work to the worker) under both the "jax" and "numba" max-energy
+      # backends alike, which points at something backend-independent:
+      # numpy/numba/jax-based multiprocessing workers commonly rely on
+      # /dev/shm-backed shared memory for large arrays, and a too-small
+      # /dev/shm classically manifests as exactly this - a silent
+      # SIGSEGV/SIGBUS with no Python-level diagnostic at all.
+      options: --privileged --shm-size=1g
     defaults:
       run:
         shell: bash -el {0}
@@ -309,6 +319,8 @@ jobs:
         uses: etive-io/actions/run-asimov-command@v1
         with:
           script: |
+            echo "--- /dev/shm size (confirming the --shm-size=1g fix took effect) ---"
+            df -h /dev/shm || echo "(df unavailable)"
             cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
             # 30s wasn't enough last time: the batch job was still mid-run
             # ("1 running, 0 held") at the 30s mark and only held ~10s
