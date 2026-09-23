@@ -17,3 +17,9 @@ comment: pycWB end-to-end test production (synthetic noise, sine-Gaussian inject
 status: ready
 scheduler:
   accounting group: "ligo.dev.o4.burst.allsky.cwboffline"
+  # This test pool (htcondor/mini, no SciTokens credmon configured) can't
+  # satisfy pycWB's hardcoded "use_oauth_services = scitokens" submit-file
+  # requirement - every node job holds forever with "Job credentials are
+  # not available" otherwise. This test uses only synthetic noise and
+  # needs no real credentials. See build_dag()'s handling of this key.
+  strip oauth credentials: true

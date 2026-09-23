@@ -254,6 +254,30 @@ class PyCWB(Pipeline):
         finally:
             os.chdir(original_cwd)
 
+        # pycWB's HTCondor.create() unconditionally writes "use_oauth_services
+        # = scitokens" plus a matching BEARER_TOKEN_FILE environment line into
+        # every node's submit file (batch, merge, simulation_summary) - there
+        # is no config option to skip this (confirmed directly against
+        # pycwb.modules.condor.condor). On a real IGWN pool with a working
+        # SciTokens credmon this is exactly what's needed to read real frame
+        # data; on a pool without one configured, HTCondor holds every job
+        # with "Job credentials are not available" and they never run. This
+        # is for test/local pools that have no credmon at all (e.g. this
+        # plugin's own end-to-end test, which uses only synthetic noise and
+        # needs no real credentials) - it must stay off by default so real
+        # deployments keep requesting real credentials.
+        if scheduler_meta.get("strip oauth credentials", False):
+            for sub_file in glob.glob(os.path.join(working_dir, "condor", "*.sub")):
+                with open(sub_file) as f:
+                    lines = f.readlines()
+                with open(sub_file, "w") as f:
+                    f.writelines(
+                        line
+                        for line in lines
+                        if not line.strip().startswith("use_oauth_services")
+                        and not line.strip().startswith("environment = BEARER_TOKEN_FILE")
+                    )
+
         # condor.dag_file is a pathlib.Path (from htcondor2.dags.write_dag);
         # asimov's own scheduler.submit_dag() passes it straight to
         # htcondor2.Submit.from_dag(), which requires a plain str.

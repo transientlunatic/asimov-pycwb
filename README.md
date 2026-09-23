@@ -59,6 +59,7 @@ data-fetching pipelines such as `asimov-gwdata`):
 | `event time` | `gps_center` (the trigger time to follow up) |
 | `scheduler.accounting group` | HTCondor `accounting_group` (**required**) |
 | `scheduler.n proc`, `.conda environment`, `.request memory`, `.request disk` | job submission parameters |
+| `scheduler.strip oauth credentials` | strips pycWB's hardcoded `use_oauth_services = scitokens` submit-file requirement (see below) — **only** for test/local pools with no SciTokens credmon; leave unset for real deployments |
 | `data.channels` | `channelNamesRaw` |
 | `data.data files` | `frFiles` (a generated per-IFO frame-cache list file, written from whichever frame path(s) `asimov-gwdata` or similar provides — string or list, one frame path per line) |
 | `data.segment length`, `.time before`, `.time after` | the `time_left`/`time_right` follow-up window around `event time` |
@@ -119,6 +120,18 @@ plugin didn't otherwise need to know about, both worth flagging clearly:
   `github.com/PycWB/xtalk-data`). This is unrelated to the ROOT/cwb-core
   extension above and needs no credentials, and it downloads and validates
   correctly in CI (confirmed by the workflow's own runs).
+- **pycWB's `HTCondor.create()` unconditionally writes a SciTokens
+  requirement (`use_oauth_services = scitokens`) into every node's submit
+  file, with no config option to skip it** (confirmed directly against
+  `pycwb.modules.condor.condor` — there is no parameter, environment
+  variable, or config key that disables this). On a real IGWN pool with a
+  working SciTokens credmon, that's exactly what real frame-data access
+  needs; this minimal test pool has no credmon at all, so every node job
+  held forever with `Job credentials are not available` until this
+  plugin's `build_dag()` learned to strip those lines back out when
+  `scheduler.strip oauth credentials` is set (see the metadata table
+  above) — opt-in, and only meant for credmon-less test/local pools like
+  this one.
 
 This workflow is green: a real DAG is submitted to a real HTCondor pool,
 the batch analysis job and merge node both run for real over synthetic
