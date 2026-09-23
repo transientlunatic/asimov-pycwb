@@ -234,13 +234,19 @@ jobs:
             test -f working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/pycwb-test.dag
 
       # This is the real completion criterion asimov_pycwb's
-      # detect_completion() checks for -- not a smoke-test proxy. Reaching
-      # it means the DAG's merge node genuinely ran after the batch analysis
-      # job, over pycWB's real (simulated-noise) output.
-      - name: Wait for the real merged catalog
+      # detect_completion() checks for -- not a smoke-test proxy.
+      # catalog.parquet is *not* used here: pycWB creates it, empty, back
+      # in "Add and build the real pycWB production" above (prepare_job_runs
+      # calls Catalog.create() before any batch/merge job ever runs), so
+      # waiting on it would pass immediately without the DAG having done
+      # any real work. progress.parquet is only written by pycWB's merge
+      # DAG node once the batch job has recorded real per-lag progress, so
+      # reaching it means the merge node genuinely ran after the batch
+      # analysis job, over pycWB's real (simulated-noise) output.
+      - name: Wait for the real merge (progress.parquet)
         uses: etive-io/actions/wait-for-files@v1
         with:
-          patterns: "catalog.parquet"
+          patterns: "progress.parquet"
           directory: "working/FAKE_PYCWB_TEST_EVENT/pycwb-test/catalog"
           timeout: "600"
           interval: "10"
@@ -251,22 +257,25 @@ jobs:
         with:
           script: cd e2e_project && asimov monitor
 
-      - name: Verify the merged catalog is genuinely readable
+      - name: Verify the merged catalog and progress files are genuinely readable
         uses: etive-io/actions/run-asimov-command@v1
         with:
           script: |
             cd e2e_project
             python3 -c "
             import pyarrow.parquet as pq
-            path = 'working/FAKE_PYCWB_TEST_EVENT/pycwb-test/catalog/catalog.parquet'
-            table = pq.read_table(path)
-            print('Catalog columns:', table.schema.names)
-            print('Trigger rows:', table.num_rows)
+            base = 'working/FAKE_PYCWB_TEST_EVENT/pycwb-test/catalog'
+            catalog = pq.read_table(f'{base}/catalog.parquet')
+            progress = pq.read_table(f'{base}/progress.parquet')
+            print('Catalog columns:', catalog.schema.names)
+            print('Trigger rows:', catalog.num_rows)
+            print('Progress rows:', progress.num_rows)
+            assert progress.num_rows > 0, 'progress.parquet exists but recorded no lags'
             # Not asserted: whether the injected sine-Gaussian burst actually
             # cleared cWB's detection thresholds is a question of signal
             # amplitude tuning this test doesn't try to guarantee. A
-            # non-empty, readable catalog produced by a real merge is this
-            # test's completion criterion; a nonzero trigger count is a
+            # non-empty, readable progress file produced by a real merge is
+            # this test's completion criterion; a nonzero trigger count is a
             # bonus signal, logged for visibility.
             "
 

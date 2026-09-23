@@ -81,8 +81,11 @@ def test_template_falls_back_when_no_data_files(tmp_path):
 
 
 def test_template_uses_provided_data_files(tmp_path):
+    # A single frame path per IFO (as e.g. a simple data-fetching pipeline
+    # might provide) is written into a generated one-line cache file, since
+    # pycWB's frFiles expects a *file* listing frame paths, not a raw path.
     meta = make_meta()
-    meta["data"]["data files"] = {"H1": "input/H1_frames.in", "L1": "input/L1_frames.in"}
+    meta["data"]["data files"] = {"H1": "input/H1-1234-32.gwf", "L1": "input/L1-1234-32.gwf"}
     production = FakeProduction(tmp_path, meta)
     pipeline = PyCWB(production)
 
@@ -90,7 +93,35 @@ def test_template_uses_provided_data_files(tmp_path):
     with open(config_file) as f:
         config = yaml.safe_load(f)
 
-    assert config["frFiles"] == ["input/H1_frames.in", "input/L1_frames.in"]
+    assert config["frFiles"] == [
+        str(tmp_path / "frames_H1.in"),
+        str(tmp_path / "frames_L1.in"),
+    ]
+    assert (tmp_path / "frames_H1.in").read_text() == "input/H1-1234-32.gwf\n"
+    assert (tmp_path / "frames_L1.in").read_text() == "input/L1-1234-32.gwf\n"
+
+
+def test_template_uses_provided_data_files_as_lists(tmp_path):
+    # asimov-gwdata-style pipelines may store *multiple* frame paths per
+    # IFO (a segment spanning several downloaded frame files) as a list;
+    # each one must land on its own line in the generated cache file, not
+    # be interpolated as a single Python-list-shaped string.
+    meta = make_meta()
+    meta["data"]["data files"] = {
+        "H1": ["input/H1-1000-16.gwf", "input/H1-1016-16.gwf"],
+        "L1": ["input/L1-1000-16.gwf", "input/L1-1016-16.gwf"],
+    }
+    production = FakeProduction(tmp_path, meta)
+    pipeline = PyCWB(production)
+
+    pipeline._render_config()
+
+    assert (tmp_path / "frames_H1.in").read_text() == (
+        "input/H1-1000-16.gwf\ninput/H1-1016-16.gwf\n"
+    )
+    assert (tmp_path / "frames_L1.in").read_text() == (
+        "input/L1-1000-16.gwf\ninput/L1-1016-16.gwf\n"
+    )
 
 
 def test_missing_interferometers_raises(tmp_path):
@@ -168,6 +199,33 @@ def test_build_dag_dryrun_prefers_preseeded_config(tmp_path, capsys):
     pipeline.build_dag(dryrun=True)
 
     assert preseeded.read_text() == "outputDir: output\n"
+
+
+def test_detect_completion_false_with_only_empty_catalog(tmp_path):
+    # pycWB's prepare_job_runs() (called from build_dag(), long before any
+    # batch or merge job runs) already creates catalog/catalog.parquet as
+    # an empty structure - detect_completion() must not treat that alone as
+    # "finished".
+    production = FakeProduction(tmp_path, make_meta())
+    pipeline = PyCWB(production)
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+    (catalog_dir / "catalog.parquet").write_bytes(b"")
+
+    assert pipeline.detect_completion() is False
+
+
+def test_detect_completion_true_once_progress_exists(tmp_path):
+    # catalog/progress.parquet is only written by pycWB's merge DAG node,
+    # once the batch job has recorded real per-lag progress.
+    production = FakeProduction(tmp_path, make_meta())
+    pipeline = PyCWB(production)
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+    (catalog_dir / "catalog.parquet").write_bytes(b"")
+    (catalog_dir / "progress.parquet").write_bytes(b"")
+
+    assert pipeline.detect_completion() is True
 
 
 def test_submit_dag_accepts_dryrun_kwarg(tmp_path):

@@ -70,6 +70,38 @@ class PyCWB(Pipeline):
         )
         return candidate if os.path.exists(candidate) else None
 
+    def _write_frame_cache_files(self, ifos, data_files):
+        """
+        Write a per-IFO frame-cache list file for pycWB's ``frFiles``.
+
+        pycWB's ``frFiles`` expects, per IFO, the path to a text file
+        listing one frame path per line (see
+        ``pycwb.modules.job_segment.frame.get_frame_meta``) - not raw frame
+        paths embedded directly in the config. Data-fetching pipelines
+        (e.g. asimov-gwdata) may store either a single frame path or a
+        list of frame paths per IFO in
+        ``production.meta['data']['data files']``; this normalizes either
+        shape into a real cache-list file pycWB can read, so the template
+        never has to interpolate a Python list into a YAML scalar.
+
+        Returns a dict of ``{ifo: cache_file_path}`` for any IFO with data
+        files provided; IFOs without one are omitted (the template falls
+        back to its "download data" branch for those).
+        """
+        cache_files = {}
+        for ifo in ifos:
+            paths = data_files.get(ifo)
+            if not paths:
+                continue
+            if isinstance(paths, str):
+                paths = [paths]
+            cache_file = os.path.join(self.production.rundir, f"frames_{ifo}.in")
+            with open(cache_file, "w") as f:
+                for path in paths:
+                    f.write(f"{path}\n")
+            cache_files[ifo] = cache_file
+        return cache_files
+
     def _render_config(self):
         """
         Render this production's ``user_parameters.yaml`` from the packaged
@@ -111,6 +143,7 @@ class PyCWB(Pipeline):
         data_meta = meta.get("data", {})
         quality_meta = meta.get("quality", {})
         likelihood_meta = meta.get("likelihood", {})
+        raw_data_files = data_meta.get("data files", {})
 
         # Targeted follow-up window: default to a symmetric window built
         # from the (deprecated pesummary-style) "segment length" meta key
@@ -135,12 +168,12 @@ class PyCWB(Pipeline):
             f_low=f_low,
             f_high=f_high,
             channels=data_meta.get("channels", {}),
-            data_files=data_meta.get("data files", {}),
+            data_files=self._write_frame_cache_files(ifos, raw_data_files),
             veto_files=quality_meta.get("veto files", {}),
             accounting_group=accounting_group,
             conda_env=scheduler_meta.get("conda environment", ""),
-            job_memory=scheduler_meta.get("memory", "6GB"),
-            job_disk=scheduler_meta.get("disk", "8GB"),
+            job_memory=scheduler_meta.get("request memory", "6GB"),
+            job_disk=scheduler_meta.get("request disk", "8GB"),
         )
 
         liq = Liquid(self.config_template)
@@ -181,10 +214,21 @@ class PyCWB(Pipeline):
         # HTCondor.create() interactively confirms before touching an
         # existing condor/ directory, which would hang a non-interactive
         # asimov run. Since build_dag() is meant to regenerate the DAG from
-        # scratch, clear it ourselves first.
-        condor_dir = os.path.join(working_dir, "condor")
-        if os.path.exists(condor_dir):
-            shutil.rmtree(condor_dir)
+        # scratch, clear it ourselves first - along with every directory
+        # that holds run *state* (as opposed to shared, expensive-to-rebuild
+        # inputs like the downloaded wdmXTalk/ catalog). pycWB's own
+        # prepare_job_runs(..., overwrite=True) is a resume feature: it
+        # happily reuses an existing catalog/progress/trigger/output from a
+        # previous run, which would make detect_completion() see stale
+        # "already complete" state from before this rebuild rather than
+        # this run's own progress.
+        for stale_dir in ("condor", "catalog", "trigger", "output", "job_status", "log"):
+            stale_path = os.path.join(working_dir, stale_dir)
+            if os.path.exists(stale_path):
+                shutil.rmtree(stale_path)
+
+        scheduler_meta = self.production.meta.get("scheduler", {})
+        n_proc = scheduler_meta.get("n proc", 1)
 
         # prepare_job_runs() does os.chdir(working_dir) and never restores
         # the original directory - confirmed directly by this plugin's own
@@ -195,17 +239,16 @@ class PyCWB(Pipeline):
         original_cwd = os.getcwd()
         try:
             job_segments, config, working_dir = prepare_job_runs(
-                working_dir, config_file, overwrite=True
+                working_dir, config_file, n_proc=n_proc, overwrite=True
             )
 
-            scheduler_meta = self.production.meta.get("scheduler", {})
             condor = HTCondor(
                 working_dir=working_dir,
                 conda_env=scheduler_meta.get("conda environment") or None,
                 accounting_group=scheduler_meta.get("accounting group"),
-                n_proc=scheduler_meta.get("n proc", 1),
-                memory=scheduler_meta.get("memory", "6GB"),
-                disk=scheduler_meta.get("disk", "8GB"),
+                n_proc=n_proc,
+                memory=scheduler_meta.get("request memory", "6GB"),
+                disk=scheduler_meta.get("request disk", "8GB"),
             )
             condor.create(job_segments, submit=False)
         finally:
@@ -247,14 +290,24 @@ class PyCWB(Pipeline):
 
     def detect_completion(self):
         """
-        A pycWB run is complete once its merge job has produced the final,
-        merged catalog for the run directory (the per-batch catalog
-        fragments are merged into this file by the DAG's ``merge`` node).
+        A pycWB run is complete once its merge job has produced
+        ``catalog/progress.parquet``.
+
+        ``catalog/catalog.parquet`` is *not* a reliable signal on its own:
+        pycWB's own ``prepare_job_runs()`` (called from ``build_dag()``,
+        long before any batch or merge job runs) already creates this file
+        as an empty structure via ``Catalog.create()``, so checking only
+        for its existence would mark a production "finished" immediately
+        after ``build_dag()``, before pycWB has actually run anything.
+        ``catalog/progress.parquet`` is a distinct file that only pycWB's
+        merge DAG node writes (via ``merge_progress()``), and only once the
+        batch job has recorded real per-lag progress - a genuine signal
+        that the merge step actually ran.
         """
-        catalog_file = os.path.join(
-            self.production.rundir, "catalog", "catalog.parquet"
+        progress_file = os.path.join(
+            self.production.rundir, "catalog", "progress.parquet"
         )
-        return os.path.exists(catalog_file)
+        return os.path.exists(progress_file)
 
     def collect_assets(self):
         """

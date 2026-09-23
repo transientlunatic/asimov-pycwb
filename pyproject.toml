@@ -11,12 +11,23 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = [
     "asimov",
-    "pycWB",
     "liquidpy",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
+# pycWB is not a normal pip-installable dependency: `pip install pycWB`
+# unconditionally tries to build a compiled cwb-core C++ extension against
+# ROOT + healpix-cxx, which fails outright without them (there is no
+# manylinux wheel). It genuinely is required at runtime for build_dag()/
+# submit_dag() to work - it's just not something `pip install asimov-pycwb`
+# can pull in unconditionally without breaking installation for everyone
+# who doesn't already have a ROOT-enabled environment. See the README's
+# "Installing pycWB" section for the two supported ways to get a working
+# pycWB (a ROOT-enabled conda environment, or pycWB's own pure-Python
+# PYCWB_DISABLE_WAT=1 install path). This extra is for users who already
+# have one of those and just want pip to record the dependency.
+pycwb = ["pycWB"]
 
 [project.entry-points."asimov.pipelines"]
 pycwb = "asimov_pycwb:PyCWB"

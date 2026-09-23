@@ -58,9 +58,9 @@ data-fetching pipelines such as `asimov-gwdata`):
 | `interferometers` | `ifo` list |
 | `event time` | `gps_center` (the trigger time to follow up) |
 | `scheduler.accounting group` | HTCondor `accounting_group` (**required**) |
-| `scheduler.n proc`, `.conda environment`, `.memory`, `.disk` | job submission parameters |
+| `scheduler.n proc`, `.conda environment`, `.request memory`, `.request disk` | job submission parameters |
 | `data.channels` | `channelNamesRaw` |
-| `data.data files` | `frFiles` (per-IFO frame-cache list files, e.g. from `asimov-gwdata`) |
+| `data.data files` | `frFiles` (a generated per-IFO frame-cache list file, written from whichever frame path(s) `asimov-gwdata` or similar provides — string or list, one frame path per line) |
 | `data.segment length`, `.time before`, `.time after` | the `time_left`/`time_right` follow-up window around `event time` |
 | `likelihood.minimum frequency`, `.maximum frequency` | `fLow`/`fHigh` |
 | `reference ifo` | `refIFO` (defaults to the first interferometer) |
@@ -147,8 +147,11 @@ require.
 - `submit_dag`: submits the pre-built DAG via asimov's configured
   `scheduler.submit_dag()`, and records the returned cluster ID as
   `production.job_id`.
-- `detect_completion`: checks for the merged `catalog/catalog.parquet` file
-  that pycWB's DAG `merge` node produces once all batch jobs have finished.
+- `detect_completion`: checks for `catalog/progress.parquet`, which pycWB's
+  DAG `merge` node writes once the batch job has recorded real per-lag
+  progress (`catalog/catalog.parquet` exists from much earlier — pycWB
+  creates it, empty, while `build_dag` is still constructing the DAG — so
+  it isn't a reliable completion signal on its own).
 - `collect_assets`: returns the merged catalog, any per-trigger
   `skymap_statistics.json` files, and any unmerged per-job waveform
   reconstruction files (`output/wave_*.h5`).
@@ -178,20 +181,25 @@ a real run:
   (matching what pycWB's own `condor.py` generates); per-job
   `output/wave_*.h5` files are left unmerged. Merging them would need an
   extra `pycwb merge --wave` DAG node or an `after_completion()` hook.
-- **`detect_completion`/`collect_assets` are best-effort.** They're based
-  on reading pycWB's merge/output code. The e2e test exercises
-  `detect_completion`'s `catalog.parquet` check against a real merge, but
-  not `collect_assets`'s skymap/waveform paths (the tiny test config
-  doesn't reliably guarantee a detected trigger, and its DAG doesn't merge
-  waveforms at all — see below) — those may still need adjusting.
+- **`collect_assets` is best-effort.** It's based on reading pycWB's
+  merge/output code, but unlike `detect_completion` (verified against a
+  real merge via `catalog/progress.parquet`), the e2e test doesn't exercise
+  its skymap/waveform paths (the tiny test config doesn't reliably
+  guarantee a detected trigger, and its DAG doesn't merge waveforms at all
+  — see below) — those may still need adjusting.
 - **No GraceDB upload integration.** pycWB has `pycwb.modules.gracedb` for
   this; it isn't wired up here.
 - **Re-running `build_dag` is destructive.** pycWB's `HTCondor.create()`
   interactively confirms before touching an existing `condor/` directory,
-  which would hang a non-interactive asimov run — so `build_dag()` removes
-  that directory itself before regenerating the DAG. This means calling
+  which would hang a non-interactive asimov run, and pycWB's own
+  `prepare_job_runs(..., overwrite=True)` is a resume feature that reuses
+  any existing catalog/progress/trigger/output rather than starting fresh
+  — which would otherwise let `detect_completion()` see stale state from a
+  previous run. So `build_dag()` removes `condor/`, `catalog/`, `trigger/`,
+  `output/`, `job_status/`, and `log/` itself before regenerating the DAG
+  (leaving the downloaded `wdmXTalk/` catalog in place). This means calling
   `build_dag()` again after a production has already been submitted (or
-  has run) will discard its existing DAG.
+  has run) will discard its existing results.
 
 ## Development
 
@@ -207,9 +215,21 @@ via `asimov.pipeline.Pipeline`), since that only depends on `asimov` and
 tested — it's covered instead by the end-to-end workflow described above,
 which runs a real pycWB installation against a real HTCondor pool.
 
-The test suite only covers config-template rendering (`PyCWB._render_config`,
-via `asimov.pipeline.Pipeline`), since that only depends on `asimov` and
-`liquidpy`. It does not exercise `build_dag`/`submit_dag` against a real
-HTCondor pool or a full pycWB installation (which requires pycWB's compiled
-`cwb-core`/ROOT dependencies) — that's left as follow-up work once this
-plugin is tried against a real production.
+### Installing pycWB
+
+`pip install asimov-pycwb` does **not** pull in pycWB itself: `pip install
+pycWB` unconditionally tries to build a compiled `cwb-core` C++ extension
+against ROOT + healpix-cxx, which fails outright without them (there's no
+manylinux wheel), so making it an unconditional dependency would break
+installation for anyone without a ROOT-enabled environment already. Install
+pycWB separately, using whichever of these fits your environment:
+
+- **A ROOT-enabled conda environment** (see
+  [pycWB's own README](https://github.com/PycWB/pycwb#installation) for the
+  `conda install ... root=6 healpix_cxx=3 ...` recipe), then
+  `pip install asimov-pycwb[pycwb]` to also record the dependency; or
+- **pycWB's pure-Python install path** (no ROOT/cwb-core at all):
+  `PYCWB_DISABLE_WAT=1 pip install "pycwb @ git+https://github.com/PycWB/pycwb.git"`
+  — this is what `.github/actions/setup-pycwb-env` uses for this plugin's
+  own end-to-end test, since that flag isn't in any released PyPI version
+  yet (see `pycwb/setup.py` upstream).
