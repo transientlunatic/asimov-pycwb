@@ -153,18 +153,39 @@ plugin didn't otherwise need to know about, both worth flagging clearly:
   many shared pools disable blanket environment forwarding outright, and
   it would still be the wrong process's environment here. Again opt-in,
   and only meant for CVMFS-less test/local pools.
+- **This test's segment is much shorter than pycWB's own internal
+  defaults assume.** Getting a real analysis to run over a segment this
+  short surfaced two of pycWB's own consistency checks, both fixed in the
+  seeded config (see the "Seed the pycWB config fixture" step in
+  `e2e.yml`): `whiteWindow` defaults to a fixed 60s window for whitening,
+  which doesn't fit inside a segment this short at all (`whiteWindow: 0`
+  tells pycWB to use the segment's own duration instead, per its own
+  schema); and `segEdge` (the padding around the analysis window) must be
+  more than 1.5x the wavelet filter length pycWB computes from
+  `levelR`/`l_low`/`l_high`, which is larger than this test's original
+  edge padding.
 
 This workflow is green: a real DAG is submitted to a real HTCondor pool,
 the batch analysis job and merge node both run for real over synthetic
 noise, and the resulting `catalog/catalog.parquet` is a real, readable
 cWB trigger table (confirmed with real column names — `rho`, `net_cc`,
-`hrss_H1`, `sky_error_regions`, etc. — not a stub). Getting there took a
-few rounds of CI-driven fixes (see the PR history): a broken `pip
-install`, missing pycWB injection-parameter fields, a `submit_dag()`
-signature mismatch, a `pathlib.Path` htcondor2 rejected, and pycWB's
-`prepare_job_runs()` leaving the process's working directory changed
-after it returns. One thing the test deliberately does *not* assert:
-whether the injected sine-Gaussian burst actually clears cWB's detection
+`hrss_H1`, `sky_error_regions`, etc. — not a stub). Getting there took
+many rounds of CI-driven fixes (see the PR history for the full trail):
+a broken `pip install`, missing pycWB injection-parameter fields, a
+`submit_dag()` signature mismatch, a `pathlib.Path` htcondor2 rejected,
+pycWB's `prepare_job_runs()` leaving the process's working directory
+changed after it returns, DAGMan being unable to resolve its own nodes'
+relative submit-file paths when submitted from the wrong working
+directory (`submit_dag()` now runs from the DAG's own directory), the
+scitokens/CVMFS/PATH gaps above, and finally the `whiteWindow`/`segEdge`
+config issues. One diagnostic dead end worth naming: pycWB's own
+`processor_wrapper()` re-initializes logging *inside each worker
+process* to a separate per-job file (`log/job_<index>.log`), not the
+`.out`/`.err` HTCondor (or any direct invocation) captures — every real
+error from a failing batch run shows up there, not in stdout/stderr,
+which is why several of the fixes above took multiple rounds to
+diagnose. One thing the test deliberately does *not* assert: whether
+the injected sine-Gaussian burst actually clears cWB's detection
 thresholds (a question of amplitude tuning, not of the plugin's
 correctness) — a real, non-empty merge is the completion criterion; a
 nonzero trigger count is a bonus signal the workflow logs but doesn't
