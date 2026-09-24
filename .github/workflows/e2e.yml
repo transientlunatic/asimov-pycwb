@@ -375,6 +375,17 @@ jobs:
             cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
             echo "--- Running pycwb batch-runner directly (no HTCondor) ---"
             pycwb batch-runner config/user_parameters.yaml --work-dir=/__w/asimov-pycwb/asimov-pycwb/e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test --jobs=1-1 --n-proc=1 2>&1 && echo "MANUAL RUN SUCCEEDED" || echo "MANUAL RUN FAILED (see output above)"
+            # pycwb's own processor_wrapper() (pycwb/workflow/batch.py)
+            # re-inits logging *inside each worker process* to a per-job
+            # file, log/job_<index>.log - separate from the batch-1-1
+            # .out/.err that HTCondor (or this manual run) captures. Any
+            # real "Error processing job segment: ..." from a caught
+            # exception in the worker goes there, not to stdout/stderr.
+            # We never looked at this file until now.
+            echo "--- log/job_1.log (per-worker log - the real error should be here) ---"
+            cat log/job_1.log || echo "(missing)"
+            echo "--- log/job_0.log (in case indexing starts at 0) ---"
+            cat log/job_0.log || echo "(missing)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
