@@ -14,7 +14,7 @@ jobs:
   e2e:
     name: "pycWB end-to-end test (HTCondor)"
     runs-on: ubuntu-latest
-    # Generous ceiling: this run is genuinely tiny (a 16s segment, single
+    # Generous ceiling: this run is genuinely tiny (a 28s segment, single
     # job, no lags), but pycWB's first-run cost - the XTALK wavelet catalog
     # download, plus numba/jax JIT warmup - is unverified in CI as of this
     # workflow's first run, so this errs on the side of a long timeout
@@ -132,7 +132,7 @@ jobs:
       # when present.
       #
       # These settings (2 detectors, synthetic Gaussian noise, a single
-      # sine-Gaussian burst injection at hrss=4e-22, a 16s segment with
+      # sine-Gaussian burst injection at hrss=4e-22, a 28s segment with
       # correspondingly reduced segLen/segMLS/segTHR/resolution-level
       # settings) follow the shape of pycWB's own
       # examples/new_injection_infra_with_gaussian_noise example, adapted
@@ -168,10 +168,17 @@ jobs:
             slagMax: 0
             slagOff: 0
 
-            segLen: 16
+            # segEdge must be >= the wavelet filter length pycWB computes
+            # from levelR/l_low/l_high (~6.0s here) - confirmed directly:
+            # "Filter length must be <= segEdge (filter=6.00048828125 sec,
+            # segEdge=2.0 sec)" was the very next real error once the
+            # whiteWindow fix (below) got past the whitening crash.
+            # segLen grows to keep the same 12s analyze window
+            # (segLen - 2*segEdge) as before.
+            segLen: 28
             segMLS: 8
             segTHR: 4
-            segEdge: 2
+            segEdge: 8
 
             # pycwb_batch's real error (finally found in log/job_1.log,
             # which the batch-1-1.out/.err HTCondor captures never show -
@@ -223,8 +230,11 @@ jobs:
             pattern: 10
             iwindow: 100
 
-            gps_start: 1000000000
-            gps_end: 1000000016
+            # Widened to keep the same 12s analyze window and injection
+            # placement (gps_time=1000000008, still centered) now that
+            # segLen/segEdge grew to fit the wavelet filter length above.
+            gps_start: 999999994
+            gps_end: 1000000022
 
             save_cluster: True
             save_sky_map: True
