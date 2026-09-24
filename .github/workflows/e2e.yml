@@ -173,6 +173,19 @@ jobs:
             segTHR: 4
             segEdge: 2
 
+            # pycwb_batch's real error (finally found in log/job_1.log,
+            # which the batch-1-1.out/.err HTCondor captures never show -
+            # pycWB's processor_wrapper() re-inits logging to this
+            # separate per-job file): "IndexError: index 60 is out of
+            # bounds for axis 1 with size 32" during whitening. whiteWindow
+            # defaults to a fixed 60s, but this test's segment is only 16s
+            # long - the whitening code indexes assuming a window that
+            # doesn't fit inside the segment at all. Per pycWB's own
+            # schema (pycwb.constants.user_parameters_schema), whiteWindow
+            # = 0 means "use the segment's own duration" instead of a
+            # fixed value, which is what a segment this short needs.
+            whiteWindow: 0
+
             fLow: 32.
             fHigh: 512.
 
