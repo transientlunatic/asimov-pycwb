@@ -1,0 +1,11 @@
+# A minimal event for the asimov-pycwb end-to-end test. The production
+# under test runs against pycWB's own synthetic Gaussian-noise generation
+# (a burst injection into simulated noise, via the config's `injection.noise`
+# block), so this doesn't need real GWOSC metadata or strain data, or the
+# separate asimov-gwdata plugin.
+kind: event
+name: FAKE_PYCWB_TEST_EVENT
+interferometers:
+- H1
+- L1
+event time: 1000000008.0
