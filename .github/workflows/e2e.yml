@@ -15,25 +15,14 @@ jobs:
     name: "pycWB end-to-end test (HTCondor)"
     runs-on: ubuntu-latest
     # Generous ceiling: this run is genuinely tiny (a 36s segment, single
-    # job, no lags), but pycWB's first-run cost - the XTALK wavelet catalog
-    # download, plus numba/jax JIT warmup - is unverified in CI as of this
-    # workflow's first run, so this errs on the side of a long timeout
-    # rather than a flaky one. Tighten it once a real run's wall-clock time
-    # is known.
+    # job, no lags) and a real run completes in well under 10 minutes, but
+    # pycWB's first-run cost - the XTALK wavelet catalog download, plus
+    # jax JIT warmup - can vary, so this errs on the side of a long
+    # timeout rather than a flaky one.
     timeout-minutes: 30
     container:
       image: htcondor/mini:latest
-      # --shm-size: Docker's default /dev/shm is 64MB. pycwb_batch's
-      # worker process was crashing completely silently (no Python
-      # traceback in stdout or stderr, no HTCondor "abnormal termination"
-      # detail - just stops right where multiprocessing starts handing
-      # work to the worker) under both the "jax" and "numba" max-energy
-      # backends alike, which points at something backend-independent:
-      # numpy/numba/jax-based multiprocessing workers commonly rely on
-      # /dev/shm-backed shared memory for large arrays, and a too-small
-      # /dev/shm classically manifests as exactly this - a silent
-      # SIGSEGV/SIGBUS with no Python-level diagnostic at all.
-      options: --privileged --shm-size=1g
+      options: --privileged
     defaults:
       run:
         shell: bash -el {0}
@@ -136,12 +125,11 @@ jobs:
       # correspondingly reduced segLen/segMLS/segTHR/resolution-level
       # settings) follow the shape of pycWB's own
       # examples/new_injection_infra_with_gaussian_noise example, adapted
-      # for a much shorter segment so the run completes quickly. Unlike the
-      # sibling asimov-pycbc e2e test, this hasn't been hand-validated by
-      # running pycWB directly first: the XTALK wavelet catalog pycWB
-      # downloads on first use is fetched from a repository outside this
-      # development environment's network access, so this exact
-      # configuration may need adjusting once it's actually exercised here.
+      # for a much shorter segment so the run completes quickly. Getting a
+      # segment this short to actually pass pycWB's own internal
+      # consistency checks took real tuning (see the whiteWindow and
+      # segEdge comments below) - the values here are hand-validated
+      # against a real, passing run, not guessed.
       - name: Seed the pycWB config fixture
         uses: etive-io/actions/run-asimov-command@v1
         with:
@@ -202,17 +190,6 @@ jobs:
             levelR: 3
             l_low: 4
             l_high: 10
-
-            # pycwb_batch's worker process was crashing silently (no
-            # Python traceback at all - the job's own log just stopped
-            # mid-run, and HTCondor's job event log showed it held only
-            # ~3s after its last resource-usage sample) under the default
-            # "jax" backend for coherence's time-delay max-energy maps -
-            # most likely a JAX/XLA compatibility issue in this minimal,
-            # GPU-less container. "numba" is a supported alternative
-            # backend (see pycwb.constants.user_parameters_schema) that
-            # avoids JAX entirely.
-            max_energy_backend: "numba"
 
             wdmXTalk: "wdmXTalk/OverlapCatalog16-1024.bin"
             healpix: 3
@@ -294,124 +271,6 @@ jobs:
             grep -q "pycwb batch-runner" working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
             grep -q "config/user_parameters.yaml" working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
             test -f working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/pycwb-test.dag
-
-      # Temporary diagnostic step: the previous run submitted a DAG (asimov
-      # logged "Submitted ...") but condor_q showed zero jobs for the
-      # entire 600s wait, and progress.parquet never appeared. This prints
-      # the full DAG description and whatever DAGMan/condor state exists
-      # immediately after submission, to see whether the DAG actually has
-      # any work nodes and whether DAGMan itself ever ran.
-      - name: "Debug: inspect DAGMan/condor state right after submission"
-        uses: etive-io/actions/run-asimov-command@v1
-        with:
-          script: |
-            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
-            echo "--- Full DAG file (condor/pycwb-test.dag) ---"
-            cat condor/pycwb-test.dag
-            # Give DAGMan a few seconds to run (or crash) and flush its log,
-            # since the previous attempt at this diagnostic caught it too
-            # early: condor_q showed the condor_dagman job running for the
-            # very first poll, then gone by the next poll ~0.1s later.
-            sleep 5
-            echo "--- condor/ directory listing ---"
-            ls -la condor/
-            echo "--- condor_q -allusers -nobatch ---"
-            condor_q -allusers -nobatch || true
-            echo "--- condor_history (default) ---"
-            condor_history || true
-            echo "--- condor/pycwb-test.dag.dagman.out ---"
-            cat condor/pycwb-test.dag.dagman.out || echo "(missing)"
-            echo "--- condor/pycwb-test.dag.lib.out ---"
-            cat condor/pycwb-test.dag.lib.out || echo "(missing)"
-            echo "--- condor/pycwb-test.dag.lib.err ---"
-            cat condor/pycwb-test.dag.lib.err || echo "(missing)"
-            echo "--- condor/pycwb-test.dag.nodes.log ---"
-            cat condor/pycwb-test.dag.nodes.log || echo "(missing)"
-            echo "--- condor/pycwb_batch.sub ---"
-            cat condor/pycwb_batch.sub || echo "(missing)"
-            echo "--- condor/simulation_summary.sub ---"
-            cat condor/simulation_summary.sub || echo "(missing)"
-            echo "--- condor/merge.sub ---"
-            cat condor/merge.sub || echo "(missing)"
-
-      # Temporary diagnostic step: with the cwd and scitokens fixes, both
-      # node jobs now actually run - but pycwb_batch:0 held with "The job
-      # attribute OnExitHold expression '(ExitCode != 0)' evaluated to
-      # TRUE" (pycWB's own condor.py sets on_exit_hold = (ExitCode != 0)
-      # on the batch job specifically), meaning pycwb batch-runner itself
-      # exited nonzero. Give it time to actually finish (or hold) and dump
-      # its real stdout/stderr to see why.
-      - name: "Debug: dump batch/merge job logs after they run"
-        uses: etive-io/actions/run-asimov-command@v1
-        with:
-          script: |
-            echo "--- /dev/shm size (confirming the --shm-size=1g fix took effect) ---"
-            df -h /dev/shm || echo "(df unavailable)"
-            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
-            # 30s wasn't enough last time: the batch job was still mid-run
-            # ("1 running, 0 held") at the 30s mark and only held ~10s
-            # later, so the earlier snapshot of its .err file was captured
-            # before the real (post-PATH-fix) failure was even written.
-            sleep 90
-            echo "--- condor_q -allusers -hold ---"
-            condor_q -allusers -hold || true
-            echo "--- log/ directory listing ---"
-            ls -la log/ || echo "(no log dir)"
-            # run-asimov-command wraps this script in an *unquoted* heredoc
-            # (su - submituser <<SUBMITUSER), so the outer shell expands any
-            # $variable here to empty before the inner shell ever runs it -
-            # confirmed directly: an earlier "for f in log/*..." loop using
-            # "$f" produced zero output even though the files existed,
-            # because "$f" was already blanked out by the outer shell. Cat
-            # the known filenames directly instead of using a shell variable.
-            echo "--- log/batch-1-1.out ---"
-            cat log/batch-1-1.out || echo "(missing)"
-            echo "--- log/batch-1-1.err ---"
-            cat log/batch-1-1.err || echo "(missing)"
-            echo "--- log/simulation_summary.out ---"
-            cat log/simulation_summary.out || echo "(missing)"
-            echo "--- log/simulation_summary.err ---"
-            cat log/simulation_summary.err || echo "(missing)"
-            # batch-1-1.out/.err show pycwb starting cleanly (config
-            # loaded, workers started) then just stop - no Python
-            # traceback at all. That pattern (silent stop, no exception)
-            # points at the worker process being killed by a signal
-            # (OOM-kill or a native/jax crash) rather than a normal
-            # nonzero exit. HTCondor's own job event log records the
-            # actual termination signal/exit code and resource usage.
-            echo "--- log/batch-1-1.log (HTCondor job event log) ---"
-            cat log/batch-1-1.log || echo "(missing)"
-            echo "--- dmesg tail (OOM-kill check, best-effort) ---"
-            dmesg 2>/dev/null | tail -50 || echo "(dmesg unavailable)"
-
-      # Temporary diagnostic step: neither the jax->numba backend switch
-      # nor a larger /dev/shm nor unbuffered output changed pycwb_batch's
-      # failure at all - identical silent stop right after "Starting 1
-      # workers" / "Terminating worker processes...", no traceback ever,
-      # every single time. That's now suspicious of something about
-      # HTCondor's own job execution environment itself (cgroup/namespace
-      # sandboxing, resource limits) rather than pycWB/numba/jax. Run the
-      # exact same command directly as a plain shell command, completely
-      # bypassing HTCondor, to see whether it's an HTCondor-execution
-      # issue or a pycWB/container issue independent of condor.
-      - name: "Debug: run pycwb batch-runner directly, bypassing HTCondor"
-        uses: etive-io/actions/run-asimov-command@v1
-        with:
-          script: |
-            cd e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test
-            echo "--- Running pycwb batch-runner directly (no HTCondor) ---"
-            pycwb batch-runner config/user_parameters.yaml --work-dir=/__w/asimov-pycwb/asimov-pycwb/e2e_project/working/FAKE_PYCWB_TEST_EVENT/pycwb-test --jobs=1-1 --n-proc=1 2>&1 && echo "MANUAL RUN SUCCEEDED" || echo "MANUAL RUN FAILED (see output above)"
-            # pycwb's own processor_wrapper() (pycwb/workflow/batch.py)
-            # re-inits logging *inside each worker process* to a per-job
-            # file, log/job_<index>.log - separate from the batch-1-1
-            # .out/.err that HTCondor (or this manual run) captures. Any
-            # real "Error processing job segment: ..." from a caught
-            # exception in the worker goes there, not to stdout/stderr.
-            # We never looked at this file until now.
-            echo "--- log/job_1.log (per-worker log - the real error should be here) ---"
-            cat log/job_1.log || echo "(missing)"
-            echo "--- log/job_0.log (in case indexing starts at 0) ---"
-            cat log/job_0.log || echo "(missing)"
 
       # This is the real completion criterion asimov_pycwb's
       # detect_completion() checks for -- not a smoke-test proxy.
