@@ -1,0 +1,346 @@
+name: End-to-end test (real pycWB, real HTCondor)
+
+on:
+  push:
+    branches: ['**']
+    tags: ['*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: "pycWB end-to-end test (HTCondor)"
+    runs-on: ubuntu-latest
+    # Generous ceiling: this run is genuinely tiny (a 36s segment, single
+    # job, no lags) and a real run completes in well under 10 minutes, but
+    # pycWB's first-run cost - the XTALK wavelet catalog download, plus
+    # jax JIT warmup - can vary, so this errs on the side of a long
+    # timeout rather than a flaky one.
+    timeout-minutes: 30
+    container:
+      image: htcondor/mini:latest
+      options: --privileged
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: etive-io/actions/setup-htcondor@v1
+
+      - name: Install base tools
+        run: |
+          yum install -y sudo git
+
+      - name: Create submit user
+        uses: etive-io/actions/create-submit-user@v1
+
+      # By default DAGMan tries to fetch OAuth/Kerberos-style job
+      # credentials from a credd for every node job it submits
+      # (DAGMAN_PRODUCE_JOB_CREDENTIALS). This minimal test pool has no
+      # credd and the daemon can't even read /etc/condor/passwords.d
+      # (Permission denied), so every node submission failed outright:
+      # "ERROR: on Line N of submit file: Failed to produce job
+      # credentials: Can't find address of credd" - confirmed directly in
+      # condor_dagman's own dagman.out. None of pycWB's jobs need
+      # credentials, so just turn this off for the pool.
+      - name: Disable DAGMan job credential production
+        run: |
+          mkdir -p /etc/condor/config.d
+          echo "DAGMAN_PRODUCE_JOB_CREDENTIALS = False" > /etc/condor/config.d/99-no-job-credentials.conf
+          condor_reconfig || true
+
+      - name: Ensure submituser can access workspace
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/e2e_project"
+          chmod -R a+rwX "$GITHUB_WORKSPACE"
+
+      - name: Setup asimov-pycwb Environment
+        uses: ./.github/actions/setup-pycwb-env
+        with:
+          python-version: "3.11"
+
+      - name: Set up git
+        run: |
+          su - submituser <<SUBMITUSER
+          set -euo pipefail
+          git config --global init.defaultBranch master
+          git config --global user.email "you@example.com"
+          git config --global user.name "Your Name"
+          SUBMITUSER
+
+      - name: Create asimov project
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: cd e2e_project && asimov init "E2E Test Project"
+
+      - name: Diagnose asimov.pipelines entry-point discovery as submituser
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            python3 -c "
+            from importlib.metadata import entry_points
+            eps = [ep for ep in entry_points(group='asimov.pipelines') if ep.value.startswith('asimov_pycwb')]
+            print('Discovered asimov_pycwb entry points:', eps)
+            for ep in eps:
+                try:
+                    ep.load()
+                    print(f'  {ep.name}: loaded OK')
+                except Exception as e:
+                    print(f'  {ep.name}: FAILED TO LOAD: {e!r}')
+            "
+
+      - name: Apply fake event
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project
+            asimov apply -f "$GITHUB_WORKSPACE/tests/e2e/fake_event.yaml"
+
+      # pycWB needs no real strain data, datafind server, or the separate
+      # asimov-gwdata plugin: it runs against its own built-in simulated
+      # Gaussian noise (`injection.noise`, using pycwb.modules.noise's
+      # analytic aLIGOZeroDetHighPower PSD model) via a single sine-Gaussian
+      # burst injection, so the production under test is entirely
+      # self-contained.
+      #
+      # This is the "pre-seed a real config" alternative from the
+      # e2e-testing howto, rather than exercising asimov_pycwb's
+      # config_template Liquid rendering (which is covered separately by
+      # tests/test_pipeline_template.py): synthetic-noise injection is not
+      # something the template supports yet (see this plugin's README), so
+      # PyCWB.build_dag() looks for a pre-existing
+      # <production name>.yaml in the event repository's `analyses/`
+      # directory first (PyCWB._find_existing_config()) and uses it as-is
+      # when present.
+      #
+      # These settings (2 detectors, synthetic Gaussian noise, a single
+      # sine-Gaussian burst injection at hrss=4e-22, a 36s segment with
+      # correspondingly reduced segLen/segMLS/segTHR/resolution-level
+      # settings) follow the shape of pycWB's own
+      # examples/new_injection_infra_with_gaussian_noise example, adapted
+      # for a much shorter segment so the run completes quickly. Getting a
+      # segment this short to actually pass pycWB's own internal
+      # consistency checks took real tuning (see the whiteWindow and
+      # segEdge comments below) - the values here are hand-validated
+      # against a real, passing run, not guessed.
+      - name: Seed the pycWB config fixture
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project/checkouts/FAKE_PYCWB_TEST_EVENT
+            mkdir -p analyses
+            cat > analyses/pycwb-test.yaml << 'EOF'
+            outputDir: "output"
+            nproc: 1
+
+            analysis: "2G"
+            cfg_search: "r"
+
+            ifo: ["H1", "L1"]
+            refIFO: "H1"
+
+            lagSize: 1
+            lagStep: 1.
+            lagOff: 0
+            lagMax: 0
+
+            slagSize: 1
+            slagMin: 0
+            slagMax: 0
+            slagOff: 0
+
+            # segEdge must be >= the wavelet filter length pycWB computes
+            # from levelR/l_low/l_high (~6.0s here) - confirmed directly:
+            # "Filter length must be <= segEdge (filter=6.00048828125 sec,
+            # segEdge=2.0 sec)" was the very next real error once the
+            # whiteWindow fix (below) got past the whitening crash. Then,
+            # once segEdge=8 satisfied that, the next real check was
+            # stricter still: "segEdge must be > 1.5x the length for time
+            # delay amplitudes" (i.e. > ~9.0s) - segEdge=12 clears both.
+            # segLen grows to keep the same 12s analyze window
+            # (segLen - 2*segEdge) as before.
+            segLen: 36
+            segMLS: 8
+            segTHR: 4
+            segEdge: 12
+
+            # pycwb_batch's real error (finally found in log/job_1.log,
+            # which the batch-1-1.out/.err HTCondor captures never show -
+            # pycWB's processor_wrapper() re-inits logging to this
+            # separate per-job file): "IndexError: index 60 is out of
+            # bounds for axis 1 with size 32" during whitening. whiteWindow
+            # defaults to a fixed 60s, but this test's segment is only 16s
+            # long - the whitening code indexes assuming a window that
+            # doesn't fit inside the segment at all. Per pycWB's own
+            # schema (pycwb.constants.user_parameters_schema), whiteWindow
+            # = 0 means "use the segment's own duration" instead of a
+            # fixed value, which is what a segment this short needs.
+            whiteWindow: 0
+
+            fLow: 32.
+            fHigh: 512.
+
+            levelR: 3
+            l_low: 4
+            l_high: 10
+
+            wdmXTalk: "wdmXTalk/OverlapCatalog16-1024.bin"
+            healpix: 3
+
+            bpp: 0.001
+            subnet: 0.5
+            subcut: -1.0
+            netRHO: 5.0
+            cedRHO: 5.0
+            netCC: 0.5
+            Acore: 1.7
+            Tgap: 0.2
+            Fgap: 128.0
+            delta: 0.5
+            cfg_gamma: -1.0
+            LOUD: 300
+
+            pattern: 10
+            iwindow: 100
+
+            # Widened to keep the same 12s analyze window and injection
+            # placement (gps_time=1000000008, still centered) now that
+            # segLen/segEdge grew to fit the wavelet filter length above.
+            gps_start: 999999990
+            gps_end: 1000000026
+
+            save_cluster: True
+            save_sky_map: True
+            plot_sky_map: False
+            plot_trigger: False
+            save_waveform: True
+            plot_waveform: False
+
+            injection:
+              seed: 1234
+              parameters:
+                approximant: "SGE"
+                frequency: 235.0
+                Q: 6.0
+                ellipticity: 0.0
+                hrss: 4.0e-22
+                ra: 1.0
+                dec: 0.3
+                pol: 0.0
+                gps_time: 1000000008.0
+                t_start: -1.0
+                t_end: 1.0
+              generator: "burst_waveform.interface.generate_waveform_pycwb.get_td_waveform"
+              noise:
+                type: "GaussianNoise"
+                psds:
+                  H1: null
+                  L1: null
+                delta_seeds:
+                  H1: 10
+                  L1: 20
+            EOF
+            git add analyses/pycwb-test.yaml
+            git commit -m "Seed pycWB config fixture"
+
+      - name: Add and build the real pycWB production
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project
+            asimov apply -f "$GITHUB_WORKSPACE/tests/e2e/pycwb_production.yaml" -e FAKE_PYCWB_TEST_EVENT
+            asimov manage build submit
+
+      - name: Inspect the generated DAG
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project
+            find working/FAKE_PYCWB_TEST_EVENT/pycwb-test -maxdepth 2
+            echo "--- condor/run.sh ---"
+            cat working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
+            # A real pycwb batch-runner invocation against the seeded config,
+            # not a stub.
+            grep -q "pycwb batch-runner" working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
+            grep -q "config/user_parameters.yaml" working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/run.sh
+            test -f working/FAKE_PYCWB_TEST_EVENT/pycwb-test/condor/pycwb-test.dag
+
+      # This is the real completion criterion asimov_pycwb's
+      # detect_completion() checks for -- not a smoke-test proxy.
+      # catalog.parquet is *not* used here: pycWB creates it, empty, back
+      # in "Add and build the real pycWB production" above (prepare_job_runs
+      # calls Catalog.create() before any batch/merge job ever runs), so
+      # waiting on it would pass immediately without the DAG having done
+      # any real work. progress.parquet is only written by pycWB's merge
+      # DAG node once the batch job has recorded real per-lag progress, so
+      # reaching it means the merge node genuinely ran after the batch
+      # analysis job, over pycWB's real (simulated-noise) output.
+      - name: Wait for the real merge (progress.parquet)
+        uses: etive-io/actions/wait-for-files@v1
+        with:
+          patterns: "progress.parquet"
+          directory: "working/FAKE_PYCWB_TEST_EVENT/pycwb-test/catalog"
+          timeout: "600"
+          interval: "10"
+          working-directory: "e2e_project"
+
+      - name: Run asimov monitor for the pycWB production
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: cd e2e_project && asimov monitor
+
+      - name: Verify the merged catalog and progress files are genuinely readable
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project
+            python3 -c "
+            import pyarrow.parquet as pq
+            base = 'working/FAKE_PYCWB_TEST_EVENT/pycwb-test/catalog'
+            catalog = pq.read_table(f'{base}/catalog.parquet')
+            progress = pq.read_table(f'{base}/progress.parquet')
+            print('Catalog columns:', catalog.schema.names)
+            print('Trigger rows:', catalog.num_rows)
+            print('Progress rows:', progress.num_rows)
+            assert progress.num_rows > 0, 'progress.parquet exists but recorded no lags'
+            # Not asserted: whether the injected sine-Gaussian burst actually
+            # cleared cWB's detection thresholds is a question of signal
+            # amplitude tuning this test doesn't try to guarantee. A
+            # non-empty, readable progress file produced by a real merge is
+            # this test's completion criterion; a nonzero trigger count is a
+            # bonus signal, logged for visibility.
+            "
+
+      - name: Confirm the pycWB production reached a finished status
+        uses: etive-io/actions/run-asimov-command@v1
+        with:
+          script: |
+            cd e2e_project
+            python3 -c "
+            import yaml
+            with open('.asimov/ledger.yml') as f:
+                ledger = yaml.safe_load(f)
+            event = next(e for e in ledger['events'] if e['name'] == 'FAKE_PYCWB_TEST_EVENT')
+            production = next(p['pycwb-test'] for p in event['productions'] if 'pycwb-test' in p)
+            status = production.get('status')
+            print('pycwb-test status:', status)
+            assert status == 'finished', f'Unexpected status: {status}'
+            "
+
+      - name: Archive artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-debug
+          path: |
+            e2e_project/.asimov/
+            e2e_project/working/
+            e2e_project/checkouts/
+          retention-days: 5
